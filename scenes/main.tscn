@@ -1,0 +1,147 @@
+[gd_scene load_steps=11 format=3]
+
+[ext_resource type="Script" path="res://scripts/battle.gd" id="1"]
+[ext_resource type="Script" path="res://scripts/conductor.gd" id="2"]
+[ext_resource type="Script" path="res://scripts/enemy.gd" id="3"]
+[ext_resource type="Script" path="res://scripts/beat_ring.gd" id="4"]
+[ext_resource type="AudioStream" path="res://audio/click.wav" id="5"]
+[ext_resource type="AudioStream" path="res://audio/charge.wav" id="6"]
+[ext_resource type="AudioStream" path="res://audio/attack.wav" id="7"]
+[ext_resource type="Script" path="res://scripts/pause.gd" id="8"]
+[ext_resource type="AudioStream" path="res://audio/press.wav" id="9"]
+[ext_resource type="Script" path="res://scripts/spell_list.gd" id="10"]
+
+[node name="Main" type="Node2D"]
+script = ExtResource("1")
+
+[node name="Conductor" type="AudioStreamPlayer" parent="."]
+stream = ExtResource("5")
+script = ExtResource("2")
+
+[node name="Enemy" type="Node2D" parent="."]
+position = Vector2(576, 220)
+script = ExtResource("3")
+
+[node name="ChargeSfx" type="AudioStreamPlayer" parent="Enemy"]
+stream = ExtResource("6")
+
+[node name="AttackSfx" type="AudioStreamPlayer" parent="Enemy"]
+stream = ExtResource("7")
+
+[node name="BeatRing" type="Node2D" parent="."]
+position = Vector2(576, 425)
+script = ExtResource("4")
+
+[node name="Pause" type="Node" parent="."]
+process_mode = 3
+script = ExtResource("8")
+
+[node name="HintSfx" type="AudioStreamPlayer" parent="."]
+stream = ExtResource("5")
+
+[node name="CastSfx" type="AudioStreamPlayer" parent="."]
+volume_db = -6.0
+
+[node name="PressSfx" type="AudioStreamPlayer" parent="."]
+stream = ExtResource("9")
+volume_db = -8.0
+
+[node name="UI" type="CanvasLayer" parent="."]
+
+[node name="FlashRect" type="ColorRect" parent="UI"]
+offset_right = 1152.0
+offset_bottom = 648.0
+mouse_filter = 2
+color = Color(0.9, 0.1, 0.1, 0)
+
+[node name="EnemyHP" type="ProgressBar" parent="UI"]
+offset_left = 426.0
+offset_top = 40.0
+offset_right = 726.0
+offset_bottom = 64.0
+show_percentage = false
+
+[node name="PlayerHP" type="ProgressBar" parent="UI"]
+offset_left = 426.0
+offset_top = 596.0
+offset_right = 726.0
+offset_bottom = 620.0
+show_percentage = false
+
+[node name="SpellList" type="Node2D" parent="UI"]
+position = Vector2(24, 44)
+script = ExtResource("10")
+
+[node name="CastLog" type="Label" parent="UI"]
+offset_left = 24.0
+offset_top = 480.0
+offset_right = 400.0
+offset_bottom = 620.0
+theme_override_font_sizes/font_size = 18
+vertical_alignment = 2
+
+[node name="InfoLabel" type="Label" parent="UI"]
+offset_left = 276.0
+offset_top = 530.0
+offset_right = 876.0
+offset_bottom = 590.0
+theme_override_font_sizes/font_size = 20
+horizontal_alignment = 1
+
+[node name="PauseLabel" type="Label" parent="UI"]
+visible = false
+offset_left = 376.0
+offset_top = 270.0
+offset_right = 776.0
+offset_bottom = 330.0
+theme_override_font_sizes/font_size = 40
+horizontal_alignment = 1
+text = "PAUSED  —  ESC"
+
+[node name="PlayerHPText" type="Label" parent="UI"]
+offset_left = 426.0
+offset_top = 570.0
+offset_right = 726.0
+offset_bottom = 592.0
+theme_override_font_sizes/font_size = 16
+
+[node name="BuffLabel" type="Label" parent="UI"]
+offset_left = 426.0
+offset_top = 546.0
+offset_right = 726.0
+offset_bottom = 568.0
+theme_override_font_sizes/font_size = 14
+horizontal_alignment = 1
+
+[node name="RoundLabel" type="Label" parent="UI"]
+offset_left = 426.0
+offset_top = 12.0
+offset_right = 726.0
+offset_bottom = 36.0
+theme_override_font_sizes/font_size = 15
+horizontal_alignment = 1
+
+[node name="UpgradeLabel" type="Label" parent="UI"]
+visible = false
+offset_left = 420.0
+offset_top = 200.0
+offset_right = 900.0
+offset_bottom = 480.0
+theme_override_font_sizes/font_size = 20
+
+[node name="DebugLabel" type="Label" parent="UI"]
+offset_left = 872.0
+offset_top = 24.0
+offset_right = 1128.0
+offset_bottom = 72.0
+theme_override_font_sizes/font_size = 16
+horizontal_alignment = 2
+
+[node name="VersionLabel" type="Label" parent="UI"]
+modulate = Color(1, 1, 1, 0.55)
+offset_left = 952.0
+offset_top = 616.0
+offset_right = 1128.0
+offset_bottom = 640.0
+theme_override_font_sizes/font_size = 14
+horizontal_alignment = 2

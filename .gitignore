@@ -1,0 +1,6 @@
+# Godot 4 auto-generated cache (safe to delete, never commit)
+.godot/
+
+# Exported builds
+/build/
+export_presets.cfg
