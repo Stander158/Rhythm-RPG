@@ -76,6 +76,10 @@ var type: Dictionary = ENEMY_TYPES["slime"]
 var events := {}          # global eighth slot within the cycle -> event
 var cycle_slots: int = 1
 var damage_mult := 1.0    # endless-mode scaling, set by the battle each round
+var last_eighth := 0
+var stun_until := -1      # global eighth when a parry stun wears off
+var armed := true         # false after a stun: attacks wait for a fresh charge,
+						  # so a chain whose first C fell inside the stun is skipped
 var charge_flash := 0.0   # red pulse from a C cue, fades fast
 var heavy_charge := 0.0   # 0..1, swells over the 3-beat heavy charge
 var heavy_charging := false
@@ -92,6 +96,14 @@ func _ready() -> void:
 ## Load an enemy type: stats + flattened attack-event table.
 func setup(type_id: String) -> void:
 	type = ENEMY_TYPES[type_id]
+	# Fresh fighter, fresh state — a stun never carries over between enemies
+	stun_until = -1
+	last_eighth = 0
+	armed = true
+	heavy_charging = false
+	heavy_charge = 0.0
+	charge_flash = 0.0
+	hit_flash = 0.0
 	events.clear()
 	var slots: int = type["phrase_slots"]
 	cycle_slots = type["phrases"].size() * slots
@@ -100,17 +112,37 @@ func setup(type_id: String) -> void:
 			events[i * slots + ev[0]] = ev[1]
 	queue_redraw()
 
-## Driven by the Conductor's eighth signal (via battle.gd).
+## Driven by the Conductor's eighth signal (via battle.gd). The cycle position
+## always advances — a stun doesn't shift the pattern, it just eats events.
 func on_eighth(n: int) -> void:
+	last_eighth = n
+	if is_stunned():
+		return
 	match events.get(n % cycle_slots, ""):
 		"C":
+			armed = true
 			_charge()
 		"A":
-			_attack(type["normal"])
+			if armed:
+				_attack(type["normal"])
 		"H":
+			armed = true
 			_heavy_charge_start()
 		"HA":
-			_attack(type["heavy"])
+			if armed:
+				_attack(type["heavy"])
+
+func is_stunned() -> bool:
+	return last_eighth < stun_until
+
+## Perfect parry: freeze the attack script for a while. Also disarms —
+## attacks only resume once a fresh charge has been performed.
+func stun(eighths: int) -> void:
+	stun_until = last_eighth + eighths
+	armed = false
+	heavy_charging = false
+	heavy_charge = 0.0
+	charge_flash = 0.0
 
 ## Small vertical bob on every beat — dancing to the music.
 func bob() -> void:
@@ -156,10 +188,17 @@ func _draw() -> void:
 	var body: Color = type["color"]
 	body = body.lerp(Color(0.85, 0.25, 0.25), danger)
 	body = body.lerp(Color.WHITE, hit_flash)
+	if is_stunned():
+		body = body.lerp(Color(0.5, 0.5, 0.55), 0.6)  # dazed grey
 	var radius: float = type["radius"] + heavy_charge * 14.0  # swells while heavy-charging
 	draw_circle(Vector2.ZERO, radius, body)
-	# Eyes
+	# Eyes — X-ed out while stunned
 	draw_circle(Vector2(-25, -15), 10.0, Color.WHITE)
 	draw_circle(Vector2(25, -15), 10.0, Color.WHITE)
-	draw_circle(Vector2(-25, -15), 4.0, Color(0.1, 0.1, 0.1))
-	draw_circle(Vector2(25, -15), 4.0, Color(0.1, 0.1, 0.1))
+	if is_stunned():
+		for ex in [-25.0, 25.0]:
+			draw_line(Vector2(ex - 5, -20), Vector2(ex + 5, -10), Color(0.1, 0.1, 0.1), 2.0)
+			draw_line(Vector2(ex - 5, -10), Vector2(ex + 5, -20), Color(0.1, 0.1, 0.1), 2.0)
+	else:
+		draw_circle(Vector2(-25, -15), 4.0, Color(0.1, 0.1, 0.1))
+		draw_circle(Vector2(25, -15), 4.0, Color(0.1, 0.1, 0.1))

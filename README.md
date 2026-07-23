@@ -13,9 +13,17 @@ spell's power. All-perfect casts **crit**.
   eighth-note grid (`C_S`, `CCS`, `C_CCC_S`…); adding a spell is one line of data
 - **Suffix-matched casting** — fumbled early presses are forgiven; the spell
   is whatever your input *ends* with. Off-grid presses fizzle.
-- **Roguelite run structure** — start with Flame + Cure at Lv1; each round
-  draw 1–3 map nodes (fight / strong enemy / willpower well / learn / chest)
-  and pick one; every 6th round is a double-HP **boss**
+- **Roguelite run structure** — start with Flame + Cure at Lv1 and walk a
+  generated, fully visible 7-round map (fight / elite / well / learn / chest
+  nodes with branching paths); every 7th round is a double-HP **boss**
+- **Rings & parry** — pick a run-start ring: Flip Ring unlocks a dedicated
+  parry key (perfect parries stun and cancel attack chains), Strong Ring
+  trades it for raw stats
+- **30+ items** — chests and elites offer 3-choose-1 loot with round-scaled
+  rarity odds; boss relics bend the rules (crit-tripling gems, a ring that
+  pins your HP at 0…). Items never repeat within a run.
+- **User music library** — drop your own mp3/ogg/wav into a folder, tune each
+  track's BPM and phase offset in-game; battles shuffle your playlist
 - **Two lifelines** — Life Hearts (3 hearts, a hit at 0 HP burns one) or
   **Willpower**: a clock-face gauge that drains every beat, takes double
   damage at 0 HP, and *cracks* below 25% so you can't read it anymore

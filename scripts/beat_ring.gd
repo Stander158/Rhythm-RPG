@@ -8,7 +8,7 @@ const R := 80.0
 const CORNERS := [Vector2(0, -R), Vector2(R, 0), Vector2(0, R), Vector2(-R, 0)]
 const STAMP_LIFE := 1.6  # seconds an input stamp stays visible
 
-var show_cursor := true  # debug: the travelling blue ball (B toggles)
+var show_cursor := false  # debug aid, off in normal play (B toggles; calibration turns it on)
 var stamps: Array = []   # { "pos": Vector2, "text": String, "color": Color, "age": float }
 var flash_color := Color(1, 1, 1, 0)  # center flash on every press
 var question_alpha := 0.0             # "?" flash on every fizzle

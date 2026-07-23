@@ -25,11 +25,13 @@ func _draw() -> void:
 	draw_circle(Vector2.ZERO, RADIUS + 3.0, FACE)
 	draw_arc(Vector2.ZERO, RADIUS + 3.0, 0.0, TAU, 64, RIM, 2.0)
 	if frac >= CRACK_THRESHOLD:
-		# The remaining willpower, as a pie from 12 o'clock going clockwise
+		# The gap eats CLOCKWISE from 12 o'clock, like a hand sweeping the
+		# face clean — the remaining pie's leading edge marches clockwise.
+		var start := -PI / 2.0 + TAU * (1.0 - frac)
 		var pts := PackedVector2Array([Vector2.ZERO])
 		var steps := maxi(int(frac * 48.0), 2)
 		for i in steps + 1:
-			var a := -PI / 2.0 + TAU * frac * (float(i) / float(steps))
+			var a := start + TAU * frac * (float(i) / float(steps))
 			pts.append(Vector2(cos(a), sin(a)) * RADIUS)
 		draw_colored_polygon(pts, FILL)
 		draw_line(Vector2(0, -RADIUS - 3.0), Vector2(0, -RADIUS + 3.0), RIM, 2.0)

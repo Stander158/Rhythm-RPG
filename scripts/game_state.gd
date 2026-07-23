@@ -32,6 +32,16 @@ var round_num := 1  # endless mode round; enemy scales linearly per round
 #   ""          — not chosen yet (battle shows the selection screen)
 var life_mode := ""
 var willpower := WILLPOWER_MAX
+var ring := ""            # run-start relic: "flip" (parry) / "strong" / "none"; "" = unchosen
+var suit_crits := 0       # crits landed while holding the Power-Restricting Suit
+var band_aid_used := false
+# The cycle map: 7 rows of nodes (row 6 = boss). Player sees the whole cycle
+# and walks it along random edges, Slay-the-Spire style.
+var map_rounds: Array = []
+var map_cycle := -1  # which cycle the current map belongs to
+var map_pos := -1    # node index reached in the last completed row (-1 = cycle start)
+
+const MAP_NODE_POOL := ["fight", "fight", "fight", "elite", "well", "learn", "chest", "chest"]
 var calibration := false  # transient: battle runs with no enemy (menu option 3)
 
 func _ready() -> void:
@@ -69,6 +79,48 @@ func set_life_mode(mode: String) -> void:
 	life_mode = mode
 	save()
 
+func set_ring(r: String) -> void:
+	ring = r
+	save()
+
+## Build one cycle's map: 6 rows of 1-4 random nodes + the boss row.
+## Edges connect neighbouring rows; every node is guaranteed reachable.
+func generate_map(cycle: int) -> void:
+	map_rounds = []
+	for i in 6:
+		var row := []
+		for j in randi_range(1, 4):
+			row.append({ "type": MAP_NODE_POOL.pick_random(), "edges": [] })
+		map_rounds.append(row)
+	map_rounds.append([{ "type": "boss", "edges": [] }])
+	for i in map_rounds.size() - 1:
+		var a: Array = map_rounds[i]
+		var b: Array = map_rounds[i + 1]
+		for j in a.size():
+			# main edge goes to the proportionally nearest node, sometimes a fork
+			var t1 := clampi(roundi(float(j) * float(b.size()) / float(a.size())), 0, b.size() - 1)
+			var edges: Array = a[j]["edges"]
+			edges.append(t1)
+			if randf() < 0.4 and b.size() > 1:
+				var t2 := clampi(t1 + (1 if randf() < 0.5 else -1), 0, b.size() - 1)
+				if not edges.has(t2):
+					edges.append(t2)
+		for k in b.size():
+			var reachable := false
+			for j in a.size():
+				if a[j]["edges"].has(k):
+					reachable = true
+					break
+			if not reachable:
+				a[randi_range(0, a.size() - 1)]["edges"].append(k)
+	map_cycle = cycle
+	map_pos = -1
+	save()
+
+func set_map_pos(p: int) -> void:
+	map_pos = p
+	save()
+
 ## Damage-driven willpower loss (saved). The 1-per-beat drain writes memory
 ## only — it's persisted at round transitions to avoid a disk write per beat.
 func damage_willpower(amount: int) -> void:
@@ -90,6 +142,13 @@ func reset_run() -> void:
 	round_num = 1
 	life_mode = ""  # choose your lifeline again next run
 	willpower = WILLPOWER_MAX
+	ring = ""
+	items = []
+	suit_crits = 0
+	band_aid_used = false
+	map_rounds = []
+	map_cycle = -1
+	map_pos = -1
 	known_spells = RUN_START_SPELLS.duplicate()
 	spell_levels = {}
 	save()
@@ -113,6 +172,12 @@ func save() -> void:
 		"round_num": round_num,
 		"life_mode": life_mode,
 		"willpower": willpower,
+		"ring": ring,
+		"suit_crits": suit_crits,
+		"band_aid_used": band_aid_used,
+		"map_rounds": map_rounds,
+		"map_cycle": map_cycle,
+		"map_pos": map_pos,
 	}, "\t"))
 
 func set_bpm(v: float) -> void:
@@ -153,3 +218,15 @@ func load_save() -> void:
 			round_num = int(data.get("round_num", round_num))
 			life_mode = data.get("life_mode", "")
 			willpower = int(data.get("willpower", WILLPOWER_MAX))
+			ring = data.get("ring", "")
+			suit_crits = int(data.get("suit_crits", 0))
+			band_aid_used = data.get("band_aid_used", false)
+			map_rounds = data.get("map_rounds", [])
+			for row in map_rounds:  # JSON floats -> ints
+				for node in row:
+					var ie: Array = []
+					for e in node["edges"]:
+						ie.append(int(e))
+					node["edges"] = ie
+			map_cycle = int(data.get("map_cycle", -1))
+			map_pos = int(data.get("map_pos", -1))
