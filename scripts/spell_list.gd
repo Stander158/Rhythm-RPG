@@ -10,12 +10,23 @@ const SLOT_W := 24.0
 const PATTERN_X := 168.0
 const GLYPHS := { "L": "←", "R": "→", "U": "↑", "D": "↓" }
 
+func _process(_delta: float) -> void:
+	queue_redraw()  # levels and learned spells change mid-scene now
+
 func _draw() -> void:
 	var font := ThemeDB.fallback_font
 	var y := 0.0
-	for spell in SpellBook.SPELLS:
-		if not GameState.known_spells.has(spell["name"]):
-			continue  # unlearned spells stay hidden
+	# Calibration mode unlocks the whole book for practice
+	var shown: Array = []
+	if GameState.calibration:
+		for spell in SpellBook.SPELLS:
+			shown.append(spell["name"])
+	else:
+		shown = GameState.known_spells  # player's slot order
+	for spell_name in shown:
+		var spell := SpellBook.get_spell(spell_name)
+		if spell.is_empty():
+			continue
 		draw_string(font, Vector2(0, y + 6), spell["name"],
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 17, Color.WHITE)
 		draw_string(font, Vector2(96, y + 6), "Lv%d" % GameState.get_spell_level(spell["name"]),

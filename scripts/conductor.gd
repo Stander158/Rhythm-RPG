@@ -7,13 +7,14 @@ signal beat(beat_number: int)
 signal eighth(eighth_number: int)  # twice per beat — enemy patterns use this grid
 
 @export var bpm := 100.0
-@export var count_in_beats := 8  # "get ready" beats before the battle proper
+@export var count_in_beats := 16  # "get ready" beats before the battle proper
 
 var seconds_per_beat: float
 var song_time := 0.0  # seconds since the battle started
 var last_beat := -1
 var last_eighth := -1
 var running := false
+var metronome := false  # debug: audible click on every beat (M toggles)
 
 func _ready() -> void:
 	seconds_per_beat = 60.0 / bpm
@@ -44,8 +45,9 @@ func _process(delta: float) -> void:
 	var current := floori(song_time / seconds_per_beat)
 	if current != last_beat:
 		last_beat = current
-		pitch_scale = 1.5 if posmod(current, 4) == 0 else 1.0  # accent beat 1 of each bar
-		play()  # the click
+		if metronome:
+			pitch_scale = 1.5 if posmod(current, 4) == 0 else 1.0  # accent beat 1 of each bar
+			play()  # the click
 		beat.emit(current)
 	var current_e := floori(song_time / (seconds_per_beat * 0.5))
 	if current_e != last_eighth:

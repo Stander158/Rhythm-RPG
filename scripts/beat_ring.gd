@@ -8,8 +8,10 @@ const R := 80.0
 const CORNERS := [Vector2(0, -R), Vector2(R, 0), Vector2(0, R), Vector2(-R, 0)]
 const STAMP_LIFE := 1.6  # seconds an input stamp stays visible
 
+var show_cursor := true  # debug: the travelling blue ball (B toggles)
 var stamps: Array = []   # { "pos": Vector2, "text": String, "color": Color, "age": float }
 var flash_color := Color(1, 1, 1, 0)  # center flash on every press
+var question_alpha := 0.0             # "?" flash on every fizzle
 
 @onready var conductor: AudioStreamPlayer = $"../Conductor"
 
@@ -21,6 +23,10 @@ func flash(c: Color) -> void:
 func stamp(text: String, color: Color) -> void:
 	stamps.append({ "pos": _cursor_pos(), "text": text, "color": color, "age": 0.0 })
 
+## Fizzle feedback: a "?" flashes in the middle of the diamond.
+func fizzle_mark() -> void:
+	question_alpha = 1.0
+
 ## Where the cursor is right now: corner index = beat within the bar,
 ## progress along the edge = how far into the beat we are.
 func _cursor_pos() -> Vector2:
@@ -29,6 +35,7 @@ func _cursor_pos() -> Vector2:
 
 func _process(delta: float) -> void:
 	flash_color.a = maxf(flash_color.a - delta * 4.0, 0.0)
+	question_alpha = maxf(question_alpha - delta * 1.5, 0.0)
 	for s in stamps:
 		s["age"] += delta
 	stamps = stamps.filter(func(s): return s["age"] < STAMP_LIFE)
@@ -49,10 +56,14 @@ func _draw() -> void:
 			size = lerpf(10.0, 5.0, progress)
 		draw_circle(CORNERS[i], size, Color.WHITE)
 	# the travelling cursor
-	if conductor.running:
+	if conductor.running and show_cursor:
 		draw_circle(_cursor_pos(), 7.0, Color(0.4, 0.75, 1.0))
-	# player input stamps, fading with age
+	# fizzle "?" in the center
 	var font := ThemeDB.fallback_font
+	if question_alpha > 0.0:
+		draw_string(font, Vector2(-13, 16), "?",
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 46, Color(0.75, 0.75, 0.8, question_alpha))
+	# player input stamps, fading with age
 	for s in stamps:
 		var c: Color = s["color"]
 		c.a = 1.0 - s["age"] / STAMP_LIFE

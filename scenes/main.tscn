@@ -1,4 +1,4 @@
-[gd_scene load_steps=11 format=3]
+[gd_scene load_steps=12 format=3]
 
 [ext_resource type="Script" path="res://scripts/battle.gd" id="1"]
 [ext_resource type="Script" path="res://scripts/conductor.gd" id="2"]
@@ -10,6 +10,7 @@
 [ext_resource type="Script" path="res://scripts/pause.gd" id="8"]
 [ext_resource type="AudioStream" path="res://audio/press.wav" id="9"]
 [ext_resource type="Script" path="res://scripts/spell_list.gd" id="10"]
+[ext_resource type="Script" path="res://scripts/will_clock.gd" id="11"]
 
 [node name="Main" type="Node2D"]
 script = ExtResource("1")
@@ -46,6 +47,9 @@ volume_db = -6.0
 stream = ExtResource("9")
 volume_db = -8.0
 
+[node name="BGM" type="AudioStreamPlayer" parent="."]
+volume_db = -9.0
+
 [node name="UI" type="CanvasLayer" parent="."]
 
 [node name="FlashRect" type="ColorRect" parent="UI"]
@@ -67,6 +71,11 @@ offset_top = 596.0
 offset_right = 726.0
 offset_bottom = 620.0
 show_percentage = false
+
+[node name="WillClock" type="Node2D" parent="UI"]
+visible = false
+position = Vector2(775, 595)
+script = ExtResource("11")
 
 [node name="SpellList" type="Node2D" parent="UI"]
 position = Vector2(24, 44)
@@ -96,7 +105,7 @@ offset_right = 776.0
 offset_bottom = 330.0
 theme_override_font_sizes/font_size = 40
 horizontal_alignment = 1
-text = "PAUSED  —  ESC"
+text = "PAUSED — ESC resume · M menu"
 
 [node name="PlayerHPText" type="Label" parent="UI"]
 offset_left = 426.0
@@ -133,7 +142,7 @@ theme_override_font_sizes/font_size = 20
 offset_left = 872.0
 offset_top = 24.0
 offset_right = 1128.0
-offset_bottom = 72.0
+offset_bottom = 192.0
 theme_override_font_sizes/font_size = 16
 horizontal_alignment = 2
 

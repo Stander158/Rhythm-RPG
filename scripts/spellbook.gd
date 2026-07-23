@@ -15,8 +15,12 @@ extends RefCounted
 # Judgment windows are FRACTIONS of an eighth-note slot, so they scale with
 # BPM (fixed seconds would make fast tempos trivially easy: once the slot
 # shrinks below the window, everything is "Perfect").
-const PERFECT_FRACTION := 0.25  # of a slot; 75 ms @ 100 BPM
-const CLOSE_FRACTION := 0.37    # "blue" feedback tier; 111 ms @ 100 BPM
+const PERFECT_FRACTION := 0.16  # of a slot; ~41 ms @ 118 BPM — crits must be earned
+const CLOSE_FRACTION := 0.37    # "blue" feedback tier; ~94 ms @ 118 BPM
+const NONPERFECT_CAP := 0.7     # miss the perfect window at all -> at most 70% power
+const FALLOFF_POWER := 2.0      # then quality decays quadratically — small errors cost a lot
+const HIT_FRACTION := 0.40      # a press farther than this from its slot is NOT a hit —
+								# every charge and the release must actually land on the grid
 const MAX_SLOTS := 16
 
 const SPELLS := [
@@ -26,8 +30,9 @@ const SPELLS := [
 	  "damage": [30, 38, 45, 53, 60] },
 	{ "name": "Wave", "pattern": "L_L_L_S", "type": "water",
 	  "damage": [75, 93, 114, 141, 180] },
+	# Bolt is all-or-nothing (like the original): non-crit casts are halved
 	{ "name": "Bolt", "pattern": "L_LLL_S", "type": "electric",
-	  "damage": [120, 143, 165, 195, 240] },
+	  "damage": [120, 143, 165, 195, 240], "noncrit_mult": 0.5 },
 	{ "name": "Needle", "pattern": "L_LS", "type": "normal",
 	  "damage": [60, 75, 90, 105, 120], "self_damage": 15 },
 	# Buffs: value = % at full strength for this level; actual strength is
@@ -38,13 +43,20 @@ const SPELLS := [
 	  "buff_pct": [0.70, 0.80, 0.80, 0.90, 1.00], "buff_beats": [32, 32, 48, 48, 48] },
 ]
 
-## Turn a recorded press sequence into a spell (or a fizzle).
+static func get_spell(spell_name: String) -> Dictionary:
+	for spell in SPELLS:
+		if spell["name"] == spell_name:
+			return spell
+	return {}
+
+## Turn a recorded press sequence into a spell (or a fizzle). Only spells in
+## `known` can be cast.
 ## presses: [{ "time": seconds, "sym": "L"/"S"/... }] — last one is always "S".
 ## Two separate questions, answered separately:
 ##   WHICH spell?  -> press spacing relative to the FIRST press (so being
 ##                    systematically late never mangles the pattern shape)
 ##   How WELL?     -> each press's distance from the true eighth-note grid
-static func resolve(presses: Array, half_beat: float) -> Dictionary:
+static func resolve(presses: Array, half_beat: float, known: Array) -> Dictionary:
 	var t0: float = presses[0]["time"]
 	var slots := {}
 	var press_slots: Array[int] = []
@@ -66,6 +78,8 @@ static func resolve(presses: Array, half_beat: float) -> Dictionary:
 	# spell added later automatically wins over Flame.
 	var best := {}
 	for spell in SPELLS:
+		if not known.has(spell["name"]):
+			continue
 		if pattern.ends_with(spell["pattern"]):
 			if best.is_empty() or spell["pattern"].length() > best["pattern"].length():
 				best = spell
@@ -89,22 +103,28 @@ static func resolve(presses: Array, half_beat: float) -> Dictionary:
 		if absf(t_tail - anchor) > half_beat * 0.5:
 			return { "ok": false, "reason": "start on a whole beat" }
 	# Only presses inside the matched tail count toward accuracy (and crits),
-	# each judged against the whole-beat-anchored grid.
+	# each judged against the whole-beat-anchored grid. Every one of them must
+	# actually LAND on its grid point (within HIT_FRACTION of a slot) — a
+	# charge drifting toward the next half-beat is not that slot's command.
 	var tail_offsets: Array[float] = []
 	var stray := 0
 	for i in presses.size():
 		if press_slots[i] >= tail_start:
 			var rel := press_slots[i] - tail_start
-			tail_offsets.append(absf(presses[i]["time"] - (anchor + rel * half_beat)))
+			var off := absf(presses[i]["time"] - (anchor + rel * half_beat))
+			if off > half_beat * HIT_FRACTION:
+				return { "ok": false, "reason": "charge off the beat" }
+			tail_offsets.append(off)
 		else:
 			stray += 1
 	return { "ok": true, "spell": best, "offsets": tail_offsets, "stray": stray }
 
-## Accuracy -> power. Each press contributes 1.0 (Perfect) fading to 0.0 at
-## the worst possible offset (half a slot). Average is floored at 5%.
-## Every press Perfect = crit.
-static func quality(offsets: Array, half_beat: float) -> Dictionary:
-	var perfect := half_beat * PERFECT_FRACTION
+## Accuracy -> power. A press inside the perfect window is worth 1.0.
+## Outside it there's a CLIFF: value drops straight to NONPERFECT_CAP and
+## then decays quadratically to 0 at the worst offset (half a slot) — being
+## slightly off costs a lot. Average is floored at 5%. All Perfect = crit.
+static func quality(offsets: Array, half_beat: float, perfect_fraction: float = PERFECT_FRACTION) -> Dictionary:
+	var perfect := half_beat * perfect_fraction
 	var worst := half_beat / 2.0
 	var total := 0.0
 	var all_perfect := true
@@ -113,5 +133,6 @@ static func quality(offsets: Array, half_beat: float) -> Dictionary:
 			total += 1.0
 		else:
 			all_perfect = false
-			total += clampf(1.0 - (off - perfect) / (worst - perfect), 0.0, 1.0)
+			var t := clampf((off - perfect) / (worst - perfect), 0.0, 1.0)
+			total += NONPERFECT_CAP * pow(1.0 - t, FALLOFF_POWER)
 	return { "avg": maxf(total / offsets.size(), 0.05), "crit": all_perfect }

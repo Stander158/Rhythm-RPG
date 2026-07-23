@@ -11,8 +11,8 @@ config_version=5
 [application]
 
 config/name="First Game"
-config/version="0.1.0"
-run/main_scene="res://scenes/main.tscn"
+config/version="0.2.0"
+run/main_scene="res://scenes/menu.tscn"
 config/features=PackedStringArray("4.7")
 config/icon="res://icon.svg"
 

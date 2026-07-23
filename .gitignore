@@ -4,3 +4,7 @@
 # Exported builds
 /build/
 export_presets.cfg
+
+# Copyrighted music stays local — supply your own (see README)
+*.mp3
+*.mp3.import

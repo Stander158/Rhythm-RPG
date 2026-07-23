@@ -4,12 +4,23 @@ extends Node2D
 ## hp/damage. At 0 HP hits cost Life Hearts; out of hearts = run over.
 ## Phases: "battle" -> "upgrade" (victory menu) / "over" (game over).
 
-const CHARGE_TIMEOUT_BEATS := 2.0  # stop mid-charge for 2 beats -> spell dissipates
+const CHARGE_LIFETIME_BEATS := 4.0  # buffer auto-fizzles 4 beats after the first press
 const ARROWS := { "L": "←", "R": "→", "U": "↑", "D": "↓" }
 const LOG_LINES := 4
 const NORMAL_TIER := 0.65  # accuracy below this sounds/acts "weak"
-const BASE_ENEMY_HP := 1200
-const ROUND_SCALING := 1.10
+const ROUND_SCALING := 0.25  # each round adds a flat +25% of base (linear, not compounding)
+const CYCLE_LEN := 6         # rounds per cycle; the last round of each cycle is a BOSS
+const BOSS_HP_MULT := 2.0
+
+# Map nodes: what a round can be. Each round you draw 1–3 of these and pick.
+const NODE_TYPES := ["fight", "elite", "well", "learn", "chest"]
+const NODE_INFO := {
+	"fight": "Fight — Cave Slime   (win: level up a spell)",
+	"elite": "Strong Enemy — ???   (win: level up + item)",
+	"well": "Willpower Well   (+25% willpower / +1 heart)",
+	"learn": "Learn a spell   (3 random choices)",
+	"chest": "Treasure Chest   (???)",
+}
 const HEAL_FLOOR := 0.5    # heal spells never fall below 50% of listed value
 
 # Every spell has three cast sounds: weak / normal / crit, picked by accuracy.
@@ -60,11 +71,18 @@ const SPELL_COLORS := {
 
 var player_max_hp := 100
 var player_hp := 100
-var enemy_hp := BASE_ENEMY_HP
+var enemy_hp := 1
 var presses: Array = []  # the spell being charged: [{ "time": .., "sym": .. }]
 var half_beat: float
-var phase := "battle"    # "battle" | "upgrade" | "over"
+var phase := "battle"    # "battle" | "select" | "choice" | "upgrade" | "learn" | "replace" | "over"
+var current_node := ""         # the map node being played ("fight"/"elite"/"boss"/…)
+var choice_options: Array = [] # node types offered on the choice screen
+var learn_choices: Array = []  # spell names offered on the learn screen
+var pending_learn := ""        # picked spell waiting for a replacement slot
 var buffs := {}          # "atk"/"def" -> { "pct": float, "until": beat number }
+var pending_attacks: Array = []  # enemy hits waiting for the beat's window to close
+var flash_tween: Tween           # single owner of the red-flash animation
+var show_timing := false         # calibration debug: show each press's signed error in ms
 var log_lines: PackedStringArray = []
 # Input latency calibration: presses are judged at (song_time - input_offset).
 var input_offset := 0.0
@@ -77,6 +95,7 @@ var recent_errors: Array[float] = []  # signed per-press error, for auto-calibra
 @onready var info_label: Label = $UI/InfoLabel
 @onready var player_bar: ProgressBar = $UI/PlayerHP
 @onready var enemy_bar: ProgressBar = $UI/EnemyHP
+@onready var will_clock: Node2D = $UI/WillClock
 @onready var hp_text: Label = $UI/PlayerHPText
 @onready var buff_label: Label = $UI/BuffLabel
 @onready var round_label: Label = $UI/RoundLabel
@@ -87,20 +106,24 @@ var recent_errors: Array[float] = []  # signed per-press error, for auto-calibra
 @onready var hint_sfx: AudioStreamPlayer = $HintSfx
 @onready var cast_sfx: AudioStreamPlayer = $CastSfx
 @onready var press_sfx: AudioStreamPlayer = $PressSfx
+@onready var bgm: AudioStreamPlayer = $BGM
+
+const MUSIC_BPM := 118.0  # the BGM track's tempo — overrides the saved BPM
 
 func _ready() -> void:
-	# Restore what survives restarts: tempo, calibration, round scaling
-	conductor.set_bpm(GameState.bpm)
+	# The clock follows the music's tempo (debug BPM keys will desync the BGM).
+	# The BGM file is NOT in the repo (copyrighted) — loaded here if present;
+	# without it the game runs on the beat clock alone.
+	conductor.set_bpm(MUSIC_BPM)
+	if ResourceLoader.exists("res://audio/bgm_keycard.mp3"):
+		bgm.stream = load("res://audio/bgm_keycard.mp3")
+		bgm.stream.loop = true
 	half_beat = conductor.seconds_per_beat / 2.0
 	if GameState.has_input_offset:
 		input_offset = GameState.input_offset
 	else:
 		input_offset = AudioServer.get_output_latency()
 		GameState.set_input_offset(input_offset)
-	var scale_factor := pow(ROUND_SCALING, GameState.round_num - 1)
-	enemy_hp = int(roundf(BASE_ENEMY_HP * scale_factor))
-	enemy.damage_mult = scale_factor
-	round_label.text = "ROUND %d" % GameState.round_num
 	conductor.beat.connect(_on_beat)
 	conductor.eighth.connect(_on_eighth)
 	enemy.attack_landed.connect(_on_enemy_attack)
@@ -110,38 +133,93 @@ func _ready() -> void:
 	_update_debug_label()
 	version_label.text = "v" + str(ProjectSettings.get_setting("application/config/version", "0.0.0"))
 	_refresh_ui()
-	conductor.start_beats()
+	if GameState.calibration:
+		# Calibration mode: no enemy, no stakes — just you and the beat.
+		# Every debug aid starts ON here (metronome, ring, cursor ball).
+		enemy.visible = false
+		enemy_bar.visible = false
+		conductor.metronome = true
+		ring.visible = true
+		ring.show_cursor = true
+		show_timing = true
+		conductor.count_in_beats = 4  # short count-in — get practicing quickly
+		round_label.text = "CALIBRATION MODE   (ESC then M returns to menu)"
+		_update_debug_label()
+		conductor.start_beats()
+		_start_music()
+	elif GameState.life_mode == "":
+		_enter_mode_select()  # fallback: shouldn't happen via the menu flow
+	else:
+		_next_round_flow()
 
 func _unhandled_input(event: InputEvent) -> void:
 	if phase == "over":
 		if event is InputEventKey and event.pressed and event.keycode == KEY_R:
 			GameState.reset_run()
-			get_tree().reload_current_scene()
+			get_tree().change_scene_to_file("res://scenes/menu.tscn")
 		return
-	if phase == "upgrade":
-		_handle_upgrade_key(event)
+	if phase != "battle":
+		_handle_menu_key(event)
 		return
-	# Debug: - / = adjust BPM; < / > nudge input offset; 0 auto-calibrates
-	if event is InputEventKey and event.pressed and not event.echo:
+	# Debug: - / = BPM ±1; < / > input offset ±1 ms; [ / ] music offset ±1 ms;
+	# 0 auto-calibrates; M toggles the metronome click. Held keys repeat.
+	if event is InputEventKey and event.pressed:
 		match event.keycode:
 			KEY_MINUS:
-				_set_bpm(conductor.bpm - 10.0)
+				_set_bpm(conductor.bpm - 1.0)
 				return
 			KEY_EQUAL:
-				_set_bpm(conductor.bpm + 10.0)
+				_set_bpm(conductor.bpm + 1.0)
 				return
 			KEY_COMMA:  # <  judge earlier
-				input_offset -= 0.005
+				input_offset -= 0.001
 				GameState.set_input_offset(input_offset)
 				_update_debug_label()
 				return
 			KEY_PERIOD:  # >  judge later
-				input_offset += 0.005
+				input_offset += 0.001
 				GameState.set_input_offset(input_offset)
 				_update_debug_label()
 				return
+			KEY_BRACKETLEFT:   # [  music earlier relative to the beats
+				_adjust_music_offset(-0.001)
+				return
+			KEY_BRACKETRIGHT:  # ]  music later relative to the beats
+				_adjust_music_offset(0.001)
+				return
 			KEY_0:
-				_auto_calibrate()
+				if not event.echo:
+					_auto_calibrate()
+				return
+			KEY_M:
+				if not event.echo:
+					conductor.metronome = not conductor.metronome
+					_update_debug_label()
+				return
+			KEY_D:
+				if not event.echo:
+					ring.visible = not ring.visible
+					_update_debug_label()
+				return
+			KEY_B:
+				if not event.echo:
+					ring.show_cursor = not ring.show_cursor
+					_update_debug_label()
+				return
+			KEY_T:
+				if not event.echo and GameState.calibration:
+					show_timing = not show_timing
+					_update_debug_label()
+				return
+			KEY_SEMICOLON:  # ;  narrower crit window (calibration only)
+				if GameState.calibration:
+					GameState.set_perfect_fraction(GameState.perfect_fraction - 0.01)
+					_update_debug_label()
+				return
+			KEY_APOSTROPHE:  # '  wider crit window (calibration only)
+				if GameState.calibration:
+					GameState.set_perfect_fraction(GameState.perfect_fraction + 0.01)
+					_update_debug_label()
 				return
 	if conductor.song_time < 0.0:
 		return  # count-in: listen to the beat, no casting yet
@@ -167,6 +245,11 @@ func _unhandled_input(event: InputEvent) -> void:
 	recent_errors.append(err)
 	if recent_errors.size() > 16:
 		recent_errors.pop_front()
+	if show_timing:
+		# Signed press error: + = late, - = early
+		var ms := err * 1000.0
+		var tcolor := Color(1.0, 0.85, 0.2) if absf(err) <= half_beat * GameState.perfect_fraction else Color(0.6, 0.7, 0.85)
+		_float_number("%+.0f ms" % ms, false, ring.position + Vector2(105, -40), tcolor)
 	_flash_press_feedback(t, sym)
 	if sym == "S":
 		_resolve_cast()
@@ -181,7 +264,7 @@ func _flash_press_feedback(t: float, sym: String) -> void:
 	var off := fposmod(t, half_beat)
 	off = minf(off, half_beat - off)
 	var color: Color
-	if off <= half_beat * SpellBook.PERFECT_FRACTION:
+	if off <= half_beat * GameState.perfect_fraction:
 		color = Color(1.0, 0.85, 0.2)
 	elif off <= half_beat * SpellBook.CLOSE_FRACTION:
 		color = Color(0.4, 0.65, 1.0)
@@ -192,13 +275,19 @@ func _flash_press_feedback(t: float, sym: String) -> void:
 
 ## SPACE was pressed: try to turn the recorded sequence into a spell.
 func _resolve_cast() -> void:
-	var res: Dictionary = SpellBook.resolve(presses, half_beat)
+	var known: Array = GameState.known_spells
+	if GameState.calibration:
+		known = []  # calibration: the whole book is castable
+		for spell in SpellBook.SPELLS:
+			known.append(spell["name"])
+	var res: Dictionary = SpellBook.resolve(presses, half_beat, known)
 	presses.clear()
 	if not res["ok"]:
+		ring.fizzle_mark()
 		_log("Fizzle… (%s)" % res["reason"])
 		return
 	var spell: Dictionary = res["spell"]
-	var q: Dictionary = SpellBook.quality(res["offsets"], half_beat)
+	var q: Dictionary = SpellBook.quality(res["offsets"], half_beat, GameState.perfect_fraction)
 	var lv := GameState.get_spell_level(spell["name"])
 	var tier := "crit" if q["crit"] else ("normal" if q["avg"] >= NORMAL_TIER else "weak")
 	cast_sfx.stream = CAST_SFX[spell["name"]][tier]
@@ -224,7 +313,12 @@ func _resolve_cast() -> void:
 		_:
 			# Damage spells (fire / water / electric / normal)
 			var base: int = spell["damage"][lv - 1]
-			var amount: int = base * 2 if q["crit"] else int(roundf(base * q["avg"]))
+			var amount: int
+			if q["crit"]:
+				amount = base * 2
+			else:
+				# Some spells (Bolt) are all-or-nothing: non-crits are penalized
+				amount = int(roundf(base * q["avg"] * spell.get("noncrit_mult", 1.0)))
 			amount = int(roundf(amount * (1.0 + _buff_pct("atk"))))
 			enemy_hp = maxi(enemy_hp - amount, 0)
 			enemy.hit()
@@ -237,9 +331,13 @@ func _resolve_cast() -> void:
 				_damage_player(spell["self_damage"], true, false)
 				_log("Needle recoil -%d" % spell["self_damage"])
 			if enemy_hp <= 0:
-				_refresh_ui()
-				_enter_upgrade()
-				return
+				if GameState.calibration:
+					enemy_hp = int(enemy_bar.max_value)  # target dummy respawns
+				else:
+					pending_attacks.clear()  # a dead enemy's swing never lands
+					_refresh_ui()
+					_enter_upgrade()
+					return
 	_refresh_ui()
 
 func _buff_pct(kind: String) -> float:
@@ -251,12 +349,22 @@ func _buff_pct(kind: String) -> float:
 func _on_beat(n: int) -> void:
 	if phase != "battle":
 		return
-	enemy.bob()
+	if not GameState.calibration:
+		enemy.bob()
 	if n < 0:
 		info_label.text = "Get ready…  %d" % -n  # count-in: 8, 7, 6…
 		return
 	if n == 0:
 		_refresh_ui()  # count-in over, restore the normal hint
+	# Willpower mode: the clock is always ticking
+	if GameState.life_mode == "willpower" and not GameState.calibration:
+		GameState.willpower -= 1
+		if GameState.willpower <= 0:
+			GameState.willpower = 0
+			_refresh_ui()
+			_game_over()
+			return
+		_refresh_ui()
 	# Buffs expire on their beat
 	for kind in buffs.keys():
 		if n >= buffs[kind]["until"]:
@@ -267,20 +375,42 @@ func _on_beat(n: int) -> void:
 	# so the demo is honest — press along with it and you're cured
 	if player_hp <= 0 and posmod(n, 2) == 0:
 		_play_cure_hint()
-	if not presses.is_empty() and conductor.song_time - presses.back()["time"] > CHARGE_TIMEOUT_BEATS * conductor.seconds_per_beat:
+	# The charge buffer only lives 4 beats from its FIRST press, then it
+	# auto-fizzles — so a charge can never grow into "spell too long"
+	if not presses.is_empty() and (conductor.song_time - input_offset) - presses[0]["time"] > CHARGE_LIFETIME_BEATS * conductor.seconds_per_beat:
 		presses.clear()
-		_log("the spell dissipates…")
+		ring.fizzle_mark()
+		_log("Fizzle… (charge faded)")
 		_refresh_ui()
 
 ## Twice per beat — feeds the enemy's scripted attack pattern.
 func _on_eighth(n: int) -> void:
-	if phase == "battle" and n >= 0:  # pattern starts after the count-in
+	if phase == "battle" and n >= 0 and not GameState.calibration:
 		enemy.on_eighth(n)
 
+## Same-beat resolution favors the PLAYER: an enemy hit doesn't land until
+## this beat's judgment window has closed, so a cast released "late but still
+## on the beat" resolves first — a kill cancels the hit, a Cure heals before
+## the damage, a Defense+ starts reducing it.
 func _on_enemy_attack(damage: int) -> void:
-	_float_number("-%d" % damage, false, Vector2(560, 550), Color(0.95, 0.35, 0.35))
-	_damage_player(damage, false, true)
-	_refresh_ui()
+	pending_attacks.append({
+		"amount": damage,
+		"at": conductor.song_time + half_beat * 0.5 + input_offset + 0.01,
+	})
+
+func _process(_delta: float) -> void:
+	if phase != "battle" or pending_attacks.is_empty():
+		return
+	var now: float = conductor.song_time
+	var remaining: Array = []
+	for pa in pending_attacks:
+		if now >= pa["at"]:
+			_float_number("-%d" % pa["amount"], false, Vector2(560, 550), Color(0.95, 0.35, 0.35))
+			_damage_player(pa["amount"], false, true)
+			_refresh_ui()
+		else:
+			remaining.append(pa)
+	pending_attacks = remaining
 
 ## All player damage funnels through here: Defense+ reduction, death
 ## protection, and Life Hearts. can_cost_heart=false (Needle recoil) can
@@ -293,9 +423,17 @@ func _damage_player(damage: int, ignore_defense: bool, can_cost_heart: bool) -> 
 	if player_hp <= 0:
 		if not can_cost_heart:
 			return
+		_flash_screen_red()
+		if GameState.life_mode == "willpower":
+			# Hits at 0 HP burn willpower at DOUBLE the damage; HP stays at 0
+			GameState.damage_willpower(damage * 2)
+			_log("-%d WILLPOWER" % (damage * 2))
+			if GameState.willpower <= 0:
+				_refresh_ui()
+				_game_over()
+			return
 		# Hit while on death's door: a Life Heart burns, HP restored to full
 		GameState.lose_heart()
-		_flash_screen_red()
 		if GameState.hearts <= 0:
 			_refresh_ui()
 			_game_over()
@@ -312,48 +450,234 @@ func _damage_player(damage: int, ignore_defense: bool, can_cost_heart: bool) -> 
 	else:
 		player_hp -= damage
 
-## Victory: pause the fight, offer one spell level-up (keys 1-7).
+## ── The map loop ─────────────────────────────────────────────────────────
+## Every CYCLE_LEN-th round is a forced boss. Round 1 is a random surprise.
+## All other rounds: draw 1–3 node types, the player picks one.
+func _next_round_flow() -> void:
+	if GameState.round_num % CYCLE_LEN == 0:
+		_enter_node("boss")
+	elif GameState.round_num == 1:
+		_enter_node(NODE_TYPES.pick_random())
+	else:
+		_enter_choice()
+
+func _enter_choice() -> void:
+	phase = "choice"
+	conductor.stop_beats()
+	bgm.stop()
+	enemy.visible = false
+	enemy_bar.visible = false
+	round_label.text = "ROUND %d" % GameState.round_num
+	info_label.text = ""
+	var pool := NODE_TYPES.duplicate()
+	pool.shuffle()
+	choice_options = pool.slice(0, randi_range(1, 3))
+	var lines := ["Choose your path:", ""]
+	for i in choice_options.size():
+		lines.append("%d.  %s" % [i + 1, NODE_INFO[choice_options[i]]])
+	upgrade_label.text = "\n".join(lines)
+	upgrade_label.visible = true
+
+func _enter_node(node_type: String) -> void:
+	current_node = node_type
+	upgrade_label.visible = false
+	match node_type:
+		"fight", "elite", "boss":
+			_start_battle(node_type)
+		"well":
+			if GameState.life_mode == "willpower":
+				GameState.add_willpower(GameState.WILLPOWER_MAX / 4)
+				_log("Willpower Well:  +25% willpower")
+			else:
+				GameState.add_heart()
+				_log("Willpower Well:  +1 heart")
+			_refresh_ui()
+			_finish_node()
+		"learn":
+			_enter_learn()
+		"chest":
+			_log("Treasure chest… empty for now (items soon)")
+			_finish_node()
+
+func _start_battle(node_type: String) -> void:
+	phase = "battle"
+	var enemy_id: String
+	match node_type:
+		"fight":
+			enemy_id = "slime"
+		"elite":
+			enemy_id = ["clown", "hammer"].pick_random()
+		_:
+			enemy_id = enemy.ENEMY_TYPES.keys().pick_random()  # boss: anyone, beefed up
+	enemy.setup(enemy_id)
+	var scale_factor := 1.0 + ROUND_SCALING * (GameState.round_num - 1)
+	var hp_mult := BOSS_HP_MULT if node_type == "boss" else 1.0
+	enemy_hp = int(roundf(enemy.type["hp"] * scale_factor * hp_mult))
+	enemy.damage_mult = scale_factor
+	enemy.visible = true
+	enemy_bar.visible = true
+	enemy_bar.max_value = enemy_hp
+	player_hp = player_max_hp
+	presses.clear()
+	buffs.clear()
+	pending_attacks.clear()
+	round_label.text = "ROUND %d   —   %s%s" % [
+		GameState.round_num, enemy.type["display"], "   ☠ BOSS" if node_type == "boss" else ""]
+	_refresh_ui()
+	conductor.start_beats()
+	_start_music()
+
+## Battle won and reward chosen (or skipped): elite battles also drop an item.
+func _complete_battle_reward() -> void:
+	if current_node == "elite":
+		GameState.items.append("Mystery Item")
+		GameState.save()
+		_log("You found an item!  (item system coming)")
+	_finish_node()
+
+func _finish_node() -> void:
+	GameState.next_round()
+	_next_round_flow()
+
+## Fresh run: pick Life Hearts or Willpower before the music starts.
+func _enter_mode_select() -> void:
+	phase = "select"
+	upgrade_label.visible = true
+	info_label.text = ""
+	upgrade_label.text = (
+		"Choose your lifeline for this run:\n\n"
+		+ "1.  LIFE HEARTS\n     3 hearts — a hit at 0 HP burns one\n     and restores you to full HP\n\n"
+		+ "2.  WILLPOWER\n     a ticking clock — drains every beat,\n     hits at 0 HP burn it by the damage, HP stays 0.\n     When it cracks, you won't know how much is left…"
+	)
+
+## Victory reward 1: level up one known spell.
 func _enter_upgrade() -> void:
 	phase = "upgrade"
 	conductor.stop_beats()
-	var lines := ["VICTORY!  Choose a spell to level up:", ""]
-	var i := 1
-	for spell in SpellBook.SPELLS:
-		if not GameState.known_spells.has(spell["name"]):
-			continue
-		var lv := GameState.get_spell_level(spell["name"])
-		if lv >= 5:
-			lines.append("%d.  %s   Lv%d  (MAX)" % [i, spell["name"], lv])
-		else:
-			lines.append("%d.  %s   Lv%d → %d" % [i, spell["name"], lv, lv + 1])
-		i += 1
-	upgrade_label.text = "\n".join(lines)
+	bgm.stop()
 	upgrade_label.visible = true
 	info_label.text = ""
+	var all_maxed := true
+	var lines := ["VICTORY!  Choose a spell to level up:", ""]
+	for i in GameState.known_spells.size():
+		var spell_name: String = GameState.known_spells[i]
+		var lv := GameState.get_spell_level(spell_name)
+		if lv >= 5:
+			lines.append("%d.  %s   Lv%d  (MAX)" % [i + 1, spell_name, lv])
+		else:
+			all_maxed = false
+			lines.append("%d.  %s   Lv%d → %d" % [i + 1, spell_name, lv, lv + 1])
+	if all_maxed:
+		_complete_battle_reward()  # nothing to level — collect and move on
+		return
+	upgrade_label.text = "\n".join(lines)
 
-func _handle_upgrade_key(event: InputEvent) -> void:
+## The learn node: learn a new spell (3 random picks) or take the skip bonus.
+func _enter_learn() -> void:
+	phase = "learn"
+	upgrade_label.visible = true
+	info_label.text = ""
+	learn_choices.clear()
+	var unknown: Array = []
+	for spell in SpellBook.SPELLS:
+		if not GameState.known_spells.has(spell["name"]):
+			unknown.append(spell["name"])
+	unknown.shuffle()
+	for i in mini(3, unknown.size()):
+		learn_choices.append(unknown[i])
+	var lines := ["Learn a new spell?", ""]
+	for i in learn_choices.size():
+		var sp := SpellBook.get_spell(learn_choices[i])
+		lines.append("%d.  %s   %s" % [i + 1, sp["name"], _pattern_text(sp["pattern"])])
+	var skip_reward := "+60 Willpower" if GameState.life_mode == "willpower" else "+1 Life Heart"
+	lines.append("%d.  Skip  →  %s" % [learn_choices.size() + 1, skip_reward])
+	if GameState.known_spells.size() >= GameState.MAX_SPELLS and not learn_choices.is_empty():
+		lines.append("")
+		lines.append("(spellbook full — learning replaces a spell, keeping its level)")
+	upgrade_label.text = "\n".join(lines)
+
+## Spellbook full: pick which spell the newcomer replaces (it inherits the level).
+func _enter_replace() -> void:
+	phase = "replace"
+	var lines := ["Replace which spell with %s?" % pending_learn, "(the new spell inherits its level)", ""]
+	for i in GameState.known_spells.size():
+		var spell_name: String = GameState.known_spells[i]
+		lines.append("%d.  %s   Lv%d" % [i + 1, spell_name, GameState.get_spell_level(spell_name)])
+	upgrade_label.text = "\n".join(lines)
+
+func _handle_menu_key(event: InputEvent) -> void:
 	if not (event is InputEventKey and event.pressed and not event.echo):
 		return
 	var idx: int = event.keycode - KEY_1
-	var known: Array = []
-	for spell in SpellBook.SPELLS:
-		if GameState.known_spells.has(spell["name"]):
-			known.append(spell["name"])
-	if idx < 0 or idx >= known.size():
-		return
-	if GameState.get_spell_level(known[idx]) >= 5:
-		return  # maxed — pick another
-	GameState.advance_round(known[idx])
-	get_tree().reload_current_scene()
+	match phase:
+		"select":
+			if idx == 0 or idx == 1:
+				GameState.set_life_mode("hearts" if idx == 0 else "willpower")
+				upgrade_label.visible = false
+				_refresh_ui()
+				_next_round_flow()
+		"choice":
+			if idx >= 0 and idx < choice_options.size():
+				_enter_node(choice_options[idx])
+		"upgrade":
+			if idx < 0 or idx >= GameState.known_spells.size():
+				return
+			var spell_name: String = GameState.known_spells[idx]
+			if GameState.get_spell_level(spell_name) >= 5:
+				return  # maxed — pick another
+			GameState.upgrade_spell(spell_name)
+			_complete_battle_reward()
+		"learn":
+			if idx == learn_choices.size():
+				if GameState.life_mode == "willpower":
+					GameState.add_willpower(60)
+				else:
+					GameState.add_heart()
+				_finish_node()
+			elif idx >= 0 and idx < learn_choices.size():
+				pending_learn = learn_choices[idx]
+				if GameState.known_spells.size() >= GameState.MAX_SPELLS:
+					_enter_replace()
+				else:
+					GameState.learn_spell(pending_learn)
+					_finish_node()
+		"replace":
+			if idx < 0 or idx >= GameState.known_spells.size():
+				return
+			GameState.replace_spell(GameState.known_spells[idx], pending_learn)
+			_finish_node()
+
+## "L_S" -> "← · SPC" for menu display.
+func _pattern_text(pattern: String) -> String:
+	var out := PackedStringArray()
+	for i in pattern.length():
+		var ch := pattern[i]
+		if ch == "_":
+			out.append("·")
+		elif ch == "S":
+			out.append("SPC")
+		else:
+			out.append(ARROWS.get(ch, "?"))
+	return " ".join(out)
 
 func _game_over() -> void:
 	phase = "over"
 	conductor.stop_beats()
-	info_label.text = "GAME OVER — out of Life Hearts.  R = new run (Round 1, hearts refilled)"
+	bgm.stop()
+	var why := "your willpower is spent." if GameState.life_mode == "willpower" else "out of Life Hearts."
+	info_label.text = "GAME OVER — %s  R = new run" % why
 
 func _flash_screen_red() -> void:
-	flash_rect.color = Color(0.9, 0.1, 0.1, 0.5)
-	create_tween().tween_property(flash_rect, "color:a", 0.0, 0.7)
+	_flash_rect_pulse(0.5, 0.7)
+
+## All red flashes go through here — killing the previous tween first, so a
+## long damage flash can never smother the rhythmic hint pulses.
+func _flash_rect_pulse(alpha: float, duration: float) -> void:
+	if flash_tween and flash_tween.is_valid():
+		flash_tween.kill()
+	flash_rect.color = Color(0.9, 0.1, 0.1, alpha)
+	flash_tween = create_tween()
+	flash_tween.tween_property(flash_rect, "color:a", 0.0, duration)
 
 ## Cure's rhythm: three ticks an eighth apart, the last one higher where
 ## SPACE belongs. The screen pulses red IN TIME with each tick.
@@ -367,8 +691,8 @@ func _hint_pulse(pitch: float) -> void:
 		return  # cured (or the fight ended) between ticks — stop nagging
 	hint_sfx.pitch_scale = pitch
 	hint_sfx.play()
-	flash_rect.color = Color(0.9, 0.1, 0.1, 0.22)
-	create_tween().tween_property(flash_rect, "color:a", 0.0, 0.25)
+	# The screen breathes red exactly with each tick of Cure's rhythm
+	_flash_rect_pulse(0.32, half_beat * 0.8)
 
 ## Debug: live BPM change. Half-charged spells are cleared because their
 ## recorded timings belong to the old tempo.
@@ -395,9 +719,28 @@ func _auto_calibrate() -> void:
 	_log("input offset -> %.0f ms" % (input_offset * 1000.0))
 	_update_debug_label()
 
+## The music starts WITH the count-in, skipping music_offset seconds of the
+## file so its downbeats line up with the conductor's.
+func _start_music() -> void:
+	if bgm.stream:
+		bgm.play(GameState.music_offset)
+
+## Live phase tuning: seek the playing track so you can align it BY EAR —
+## press [ or ] until the music's beat sits on the click.
+func _adjust_music_offset(step: float) -> void:
+	GameState.set_music_offset(GameState.music_offset + step)
+	if bgm.playing:
+		bgm.seek(maxf(bgm.get_playback_position() + step, 0.0))
+	_update_debug_label()
+
 func _update_debug_label() -> void:
-	debug_label.text = "BPM %.0f   [-/=]\noffset %.0f ms   [</> · 0 auto]" % [
-		conductor.bpm, input_offset * 1000.0]
+	debug_label.text = "BPM %.0f   [-/=]\noffset %.0f ms   [</> · 0 auto]\nmusic %.0f ms   [ [ / ] ]\nmetronome %s   [M]\nring %s [D] · ball %s [B]" % [
+		conductor.bpm, input_offset * 1000.0, GameState.music_offset * 1000.0,
+		"ON" if conductor.metronome else "off",
+		"ON" if ring.visible else "off", "ON" if ring.show_cursor else "off"]
+	if GameState.calibration:
+		debug_label.text += "\ntiming %s   [T]\ncrit ±%.0f ms   [ ; / ' ]" % [
+			"ON" if show_timing else "off", half_beat * GameState.perfect_fraction * 1000.0]
 
 ## Floating combat number (damage on the enemy, heal/damage near the player bar).
 func _float_number(text: String, crit: bool, pos: Vector2, color: Color) -> void:
@@ -423,7 +766,12 @@ func _log(text: String) -> void:
 func _refresh_ui() -> void:
 	player_bar.value = player_hp
 	enemy_bar.value = enemy_hp
-	hp_text.text = "HP  %d / %d      %s" % [player_hp, player_max_hp, "♥ ".repeat(GameState.hearts).strip_edges()]
+	if GameState.life_mode == "willpower":
+		will_clock.visible = true
+		hp_text.text = "HP  %d / %d" % [player_hp, player_max_hp]
+	else:
+		will_clock.visible = false
+		hp_text.text = "HP  %d / %d      %s" % [player_hp, player_max_hp, "♥ ".repeat(GameState.hearts).strip_edges()]
 	var parts := PackedStringArray()
 	if _buff_pct("atk") > 0.0:
 		parts.append("ATK +%d%%  (%d)" % [roundf(_buff_pct("atk") * 100.0), buffs["atk"]["until"] - conductor.last_beat])
