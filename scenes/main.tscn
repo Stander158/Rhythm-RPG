@@ -1,4 +1,4 @@
-[gd_scene load_steps=13 format=3]
+[gd_scene load_steps=14 format=3]
 
 [ext_resource type="Script" path="res://scripts/battle.gd" id="1"]
 [ext_resource type="Script" path="res://scripts/conductor.gd" id="2"]
@@ -12,6 +12,7 @@
 [ext_resource type="Script" path="res://scripts/spell_list.gd" id="10"]
 [ext_resource type="Script" path="res://scripts/will_clock.gd" id="11"]
 [ext_resource type="Script" path="res://scripts/map_view.gd" id="12"]
+[ext_resource type="PackedScene" path="res://scenes/select_menu.tscn" id="13"]
 
 [node name="Main" type="Node2D"]
 script = ExtResource("1")
@@ -38,6 +39,8 @@ script = ExtResource("4")
 process_mode = 3
 script = ExtResource("8")
 
+[node name="PauseMenu" parent="Pause" instance=ExtResource("13")]
+
 [node name="HintSfx" type="AudioStreamPlayer" parent="."]
 stream = ExtResource("5")
 
@@ -50,6 +53,23 @@ volume_db = -8.0
 
 [node name="ParrySfx" type="AudioStreamPlayer" parent="."]
 volume_db = -4.0
+
+[node name="ExplosionSfx" type="AudioStreamPlayer" parent="."]
+volume_db = -3.0
+
+[node name="VictorySfx" type="AudioStreamPlayer" parent="."]
+volume_db = -6.0
+
+[node name="SelectMenu" parent="." instance=ExtResource("13")]
+
+[node name="FaderLayer" type="CanvasLayer" parent="."]
+layer = 10
+
+[node name="Rect" type="ColorRect" parent="FaderLayer"]
+offset_right = 1152.0
+offset_bottom = 648.0
+mouse_filter = 2
+color = Color(0, 0, 0, 0)
 
 [node name="BGM" type="AudioStreamPlayer" parent="."]
 volume_db = -9.0
@@ -114,16 +134,6 @@ offset_bottom = 590.0
 theme_override_font_sizes/font_size = 20
 horizontal_alignment = 1
 
-[node name="PauseLabel" type="Label" parent="UI"]
-visible = false
-offset_left = 376.0
-offset_top = 270.0
-offset_right = 776.0
-offset_bottom = 330.0
-theme_override_font_sizes/font_size = 40
-horizontal_alignment = 1
-text = "PAUSED — ESC resume · M menu"
-
 [node name="PlayerHPText" type="Label" parent="UI"]
 offset_left = 426.0
 offset_top = 570.0
@@ -146,14 +156,6 @@ offset_right = 726.0
 offset_bottom = 36.0
 theme_override_font_sizes/font_size = 15
 horizontal_alignment = 1
-
-[node name="UpgradeLabel" type="Label" parent="UI"]
-visible = false
-offset_left = 420.0
-offset_top = 200.0
-offset_right = 900.0
-offset_bottom = 480.0
-theme_override_font_sizes/font_size = 20
 
 [node name="DebugLabel" type="Label" parent="UI"]
 offset_left = 872.0

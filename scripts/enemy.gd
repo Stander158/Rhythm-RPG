@@ -104,6 +104,8 @@ func setup(type_id: String) -> void:
 	heavy_charge = 0.0
 	charge_flash = 0.0
 	hit_flash = 0.0
+	modulate.a = 1.0
+	scale = Vector2.ONE
 	events.clear()
 	var slots: int = type["phrase_slots"]
 	cycle_slots = type["phrases"].size() * slots
@@ -153,6 +155,14 @@ func hit() -> void:
 	hit_flash = 1.0
 	scale = Vector2(0.8, 1.2)
 	create_tween().tween_property(self, "scale", Vector2.ONE, 0.3)
+
+## Death: flash white, swell, and dissipate.
+func explode() -> void:
+	hit_flash = 1.0
+	heavy_charging = false
+	var tw := create_tween()
+	tw.tween_property(self, "scale", Vector2(1.7, 1.7), 0.5).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tw.parallel().tween_property(self, "modulate:a", 0.0, 0.9)
 
 func _charge() -> void:
 	charge_flash = 1.0

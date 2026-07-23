@@ -41,8 +41,12 @@ var map_rounds: Array = []
 var map_cycle := -1  # which cycle the current map belongs to
 var map_pos := -1    # node index reached in the last completed row (-1 = cycle start)
 
-const MAP_NODE_POOL := ["fight", "fight", "fight", "elite", "well", "learn", "chest", "chest"]
+# Node-type weights for map generation (duplicates = higher odds):
+# fight 30% · chest 30% · learn 20% · elite 10% · well 10%
+const MAP_NODE_POOL := ["fight", "fight", "fight", "elite", "well",
+	"learn", "learn", "chest", "chest", "chest"]
 var calibration := false  # transient: battle runs with no enemy (menu option 3)
+var debug_mode := false   # transient: F1 in battle unlocks the debug toggles
 
 func _ready() -> void:
 	load_save()
@@ -96,23 +100,21 @@ func generate_map(cycle: int) -> void:
 	for i in map_rounds.size() - 1:
 		var a: Array = map_rounds[i]
 		var b: Array = map_rounds[i + 1]
+		# Non-crossing sweep: each node owns a contiguous span of the next
+		# row, and spans only ever move right (sharing an endpoint is fine).
+		var k := 0
 		for j in a.size():
-			# main edge goes to the proportionally nearest node, sometimes a fork
-			var t1 := clampi(roundi(float(j) * float(b.size()) / float(a.size())), 0, b.size() - 1)
-			var edges: Array = a[j]["edges"]
-			edges.append(t1)
-			if randf() < 0.4 and b.size() > 1:
-				var t2 := clampi(t1 + (1 if randf() < 0.5 else -1), 0, b.size() - 1)
-				if not edges.has(t2):
-					edges.append(t2)
-		for k in b.size():
-			var reachable := false
-			for j in a.size():
-				if a[j]["edges"].has(k):
-					reachable = true
-					break
-			if not reachable:
-				a[randi_range(0, a.size() - 1)]["edges"].append(k)
+			var edges: Array = [k]
+			while k < b.size() - 1 and edges.size() < 3 and randf() < 0.35:
+				k += 1
+				edges.append(k)
+			a[j]["edges"] = edges
+			if j < a.size() - 1 and randf() < 0.5:
+				k = mini(k + 1, b.size() - 1)
+		# the last node sweeps up any unreached tail of the next row
+		var last: Array = a[a.size() - 1]["edges"]
+		for kk in range(int(last.max()) + 1, b.size()):
+			last.append(kk)
 	map_cycle = cycle
 	map_pos = -1
 	save()

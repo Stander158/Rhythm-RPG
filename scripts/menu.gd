@@ -1,36 +1,43 @@
 extends Node2D
-## Main menu: pick a lifeline to start a new run, or enter calibration mode
-## (no enemy — just the beat, for tuning BPM and offsets in peace).
+## Main menu — same cursor-driven SelectMenu as everything else.
 
-@onready var options: Label = $UI/Options
+@onready var select_menu: CanvasLayer = $SelectMenu
+@onready var fader: ColorRect = $FaderLayer/Rect
 
 func _ready() -> void:
 	MusicLibrary.rescan()  # pick up freshly dropped tracks
-	options.text = (
-		"1.   New Run  —  LIFE HEARTS\n\n"
-		+ "2.   New Run  —  WILLPOWER\n\n"
-		+ "3.   Calibration Mode   (no enemy; tune BPM / offsets per track)\n\n"
-		+ "4.   Open music folder   (drop mp3/ogg/wav; battles pick randomly)\n\n\n"
-		+ "input offset %.0f ms   ·   %d track(s) in library" % [
-			GameState.input_offset * 1000.0, MusicLibrary.tracks.size()]
-	)
+	select_menu.chosen.connect(_on_chosen)
+	fader.color.a = 1.0
+	create_tween().tween_property(fader, "color:a", 0.0, 0.4)
+	_open()
 
-func _unhandled_input(event: InputEvent) -> void:
-	if not (event is InputEventKey and event.pressed and not event.echo):
-		return
-	match event.keycode:
-		KEY_1:
-			_start_run("hearts")
-		KEY_2:
-			_start_run("willpower")
-		KEY_3:
+func _open(start := 0) -> void:
+	select_menu.open("RHYTHM  RPG", [
+		{ "label": "New Run  —  Life Hearts",
+		  "desc": "3 hearts. A hit at 0 HP burns one and restores you to full." },
+		{ "label": "New Run  —  Willpower",
+		  "desc": "A ticking clock gauge. Hits at 0 HP burn it double. When it cracks, no more readings…" },
+		{ "label": "Calibration Mode",
+		  "desc": "No enemy. All spells unlocked. Tune input offset and each track's BPM / delay." },
+		{ "label": "Music Folder",
+		  "desc": "%d track(s) in the library. Drop mp3 / ogg / wav here — battles shuffle them." % MusicLibrary.tracks.size() },
+	], start)
+
+func _on_chosen(i: int) -> void:
+	match i:
+		0, 1:
+			GameState.calibration = false
+			GameState.reset_run()
+			GameState.set_life_mode("hearts" if i == 0 else "willpower")
+			_fade_to_battle()
+		2:
 			GameState.calibration = true
-			get_tree().change_scene_to_file("res://scenes/main.tscn")
-		KEY_4:
+			_fade_to_battle()
+		3:
 			OS.shell_open(ProjectSettings.globalize_path(MusicLibrary.MUSIC_DIR))
+			_open(3)
 
-func _start_run(mode: String) -> void:
-	GameState.calibration = false
-	GameState.reset_run()
-	GameState.set_life_mode(mode)
-	get_tree().change_scene_to_file("res://scenes/main.tscn")
+func _fade_to_battle() -> void:
+	var tw := create_tween()
+	tw.tween_property(fader, "color:a", 1.0, 0.35)
+	tw.tween_callback(func(): get_tree().change_scene_to_file("res://scenes/main.tscn"))

@@ -1,8 +1,9 @@
 extends Node2D
-## Endless-mode battle. Charge spells with arrow keys ON THE BEAT, release
-## with SPACE. Win -> pick a spell to level up -> next round, enemy +10%
-## hp/damage. At 0 HP hits cost Life Hearts; out of hearts = run over.
-## Phases: "battle" -> "upgrade" (victory menu) / "over" (game over).
+## The battle scene: rhythm combat plus the run's map & reward flow.
+## One control scheme everywhere: arrows move, SPACE confirms (SelectMenu);
+## the map screen is cursor-driven with hover tooltips.
+## Phases: "battle" | "won" (death animation interlude) | "choice" (map) |
+## "select"/"ring" (run setup) | "chest"/"upgrade"/"learn"/"replace" | "over".
 
 const CHARGE_LIFETIME_BEATS := 4.0  # buffer auto-fizzles 4 beats after the first press
 const ARROWS := { "L": "←", "R": "→", "U": "↑", "D": "↓" }
@@ -11,17 +12,8 @@ const NORMAL_TIER := 0.65  # accuracy below this sounds/acts "weak"
 const ROUND_SCALING := 0.25  # each round adds a flat +25% of base (linear, not compounding)
 const CYCLE_LEN := 7         # rounds per cycle; the last round of each cycle is a BOSS
 const BOSS_HP_MULT := 2.0
-
-# Map nodes: what a round can be. Each round you draw 1–3 of these and pick.
-const NODE_TYPES := ["fight", "elite", "well", "learn", "chest"]
-const NODE_INFO := {
-	"fight": "Fight — Cave Slime   (win: level up a spell)",
-	"elite": "Strong Enemy — ???   (win: level up + item)",
-	"well": "Willpower Well   (+25% willpower / +1 heart)",
-	"learn": "Learn a spell   (3 random choices)",
-	"chest": "Treasure Chest   (???)",
-}
-const HEAL_FLOOR := 0.5    # heal spells never fall below 50% of listed value
+const MUSIC_BPM := 118.0  # fallback tempo when no track is available
+const HEAL_FLOOR := 0.5   # heal spells never fall below 50% of listed value
 
 # Every spell has three cast sounds: weak / normal / crit, picked by accuracy.
 const CAST_SFX := {
@@ -81,13 +73,14 @@ var player_hp := 100
 var enemy_hp := 1
 var presses: Array = []  # the spell being charged: [{ "time": .., "sym": .. }]
 var half_beat: float
-var phase := "battle"    # "battle" | "select" | "ring" | "choice" | "chest" | "upgrade" | "learn" | "replace" | "over"
-var pending_upgrades := 0      # upgrade menus owed (battle win, grimoires…)
-var last_parry := -999.0       # judged time of the last parry attempt (Flip Ring)
+var phase := "battle"
 var current_node := ""         # the map node being played ("fight"/"elite"/"boss"/…)
 var current_track: Dictionary = {}  # this battle's music (from MusicLibrary)
-var choice_options: Array = [] # node types offered on the choice screen
-var chest_choices: Array = []  # item ids offered by an opened chest
+var pending_upgrades := 0      # upgrade menus owed (battle win, grimoires…)
+var last_parry := -999.0       # judged time of the last parry attempt (Flip Ring)
+var choice_options: Array = [] # selectable node indices on the map screen
+var map_cursor := 0            # cursor within choice_options
+var menu_payload: Array = []   # per-option payload behind the active SelectMenu
 var learn_choices: Array = []  # spell names offered on the learn screen
 var pending_learn := ""        # picked spell waiting for a replacement slot
 var buffs := {}          # "atk"/"def" -> { "pct": float, "until": beat number }
@@ -106,25 +99,33 @@ var recent_errors: Array[float] = []  # signed per-press error, for auto-calibra
 @onready var info_label: Label = $UI/InfoLabel
 @onready var player_bar: ProgressBar = $UI/PlayerHP
 @onready var enemy_bar: ProgressBar = $UI/EnemyHP
-@onready var will_clock: Node2D = $UI/WillClock
 @onready var hp_text: Label = $UI/PlayerHPText
 @onready var buff_label: Label = $UI/BuffLabel
 @onready var round_label: Label = $UI/RoundLabel
-@onready var upgrade_label: Label = $UI/UpgradeLabel
 @onready var debug_label: Label = $UI/DebugLabel
 @onready var version_label: Label = $UI/VersionLabel
 @onready var flash_rect: ColorRect = $UI/FlashRect
+@onready var items_label: Label = $UI/ItemsLabel
+@onready var map_view: Node2D = $UI/MapView
+@onready var will_clock: Node2D = $UI/WillClock
+@onready var select_menu: CanvasLayer = $SelectMenu
+@onready var fader: ColorRect = $FaderLayer/Rect
 @onready var hint_sfx: AudioStreamPlayer = $HintSfx
 @onready var cast_sfx: AudioStreamPlayer = $CastSfx
 @onready var press_sfx: AudioStreamPlayer = $PressSfx
 @onready var parry_sfx: AudioStreamPlayer = $ParrySfx
-@onready var items_label: Label = $UI/ItemsLabel
-@onready var map_view: Node2D = $UI/MapView
+@onready var explosion_sfx: AudioStreamPlayer = $ExplosionSfx
+@onready var victory_sfx: AudioStreamPlayer = $VictorySfx
 @onready var bgm: AudioStreamPlayer = $BGM
 
-const MUSIC_BPM := 118.0  # the BGM track's tempo — overrides the saved BPM
-
 func _ready() -> void:
+	select_menu.chosen.connect(_on_menu_chosen)
+	explosion_sfx.stream = preload("res://audio/explosion.wav")
+	victory_sfx.stream = preload("res://audio/victory.wav")
+	# Debug readout & toggles exist ONLY in calibration mode
+	debug_label.visible = GameState.calibration
+	fader.color.a = 1.0
+	create_tween().tween_property(fader, "color:a", 0.0, 0.4)
 	# Baseline clock; each battle re-tunes it to its randomly drawn track
 	conductor.set_bpm(MUSIC_BPM)
 	half_beat = conductor.seconds_per_beat / 2.0
@@ -139,7 +140,6 @@ func _ready() -> void:
 	_recalc_max_hp()
 	player_hp = player_max_hp
 	enemy_bar.max_value = enemy_hp
-	upgrade_label.visible = false
 	_update_debug_label()
 	version_label.text = "v" + str(ProjectSettings.get_setting("application/config/version", "0.0.0"))
 	_refresh_ui()
@@ -161,24 +161,39 @@ func _ready() -> void:
 		_start_music()
 	elif GameState.life_mode == "":
 		_enter_mode_select()  # fallback: shouldn't happen via the menu flow
-	elif GameState.ring == "":
-		_enter_ring_select()  # a fresh run starts by choosing a ring
 	else:
-		_next_round_flow()
+		_next_round_flow()  # a fresh run starts at ROUND 0 (the ring chest)
+
+## ── Input ────────────────────────────────────────────────────────────────
 
 func _unhandled_input(event: InputEvent) -> void:
-	if phase == "over":
-		if event is InputEventKey and event.pressed and event.keycode == KEY_R:
-			GameState.reset_run()
-			get_tree().change_scene_to_file("res://scenes/menu.tscn")
+	if phase == "choice":
+		_map_input(event)
+		return
+	if phase == "ring_map":
+		if event.is_action_pressed("ui_accept"):
+			get_viewport().set_input_as_handled()
+			map_view.hover_ring = false
+			_enter_ring_select()
 		return
 	if phase != "battle":
-		_handle_menu_key(event)
+		return  # menus (SelectMenu) and interludes own the input now
+	# F1 unlocks the debug toggles mid-game
+	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_F1:
+		GameState.debug_mode = not GameState.debug_mode
+		debug_label.visible = GameState.calibration or GameState.debug_mode
+		_update_debug_label()
+		_log("debug mode %s" % ("ON" if GameState.debug_mode else "off"))
 		return
-	# Debug: - / = BPM ±1; < / > input offset ±1 ms; [ / ] music offset ±1 ms;
-	# 0 auto-calibrates; M toggles the metronome click. Held keys repeat.
-	if event is InputEventKey and event.pressed:
+	# Debug tuning: calibration mode, or F1-enabled debug mode. Held keys repeat.
+	if (GameState.calibration or GameState.debug_mode) and event is InputEventKey and event.pressed:
 		match event.keycode:
+			KEY_F4:  # debug: delete the enemy
+				if not event.echo and not GameState.calibration:
+					enemy_hp = 0
+					_refresh_ui()
+					_win_battle()
+				return
 			KEY_MINUS:
 				_set_bpm(conductor.bpm - 1.0)
 				return
@@ -221,27 +236,25 @@ func _unhandled_input(event: InputEvent) -> void:
 					_update_debug_label()
 				return
 			KEY_T:
-				if not event.echo and GameState.calibration:
+				if not event.echo:
 					show_timing = not show_timing
 					_update_debug_label()
 				return
-			KEY_N:  # next track (calibration): restart the count-in on it
-				if not event.echo and GameState.calibration and not MusicLibrary.tracks.is_empty():
+			KEY_N:  # next track: restart the count-in on it
+				if not event.echo and not MusicLibrary.tracks.is_empty():
 					var i: int = MusicLibrary.tracks.find(current_track)
 					current_track = MusicLibrary.tracks[(i + 1) % MusicLibrary.tracks.size()]
 					_apply_track()
 					conductor.start_beats()
 					_start_music()
 				return
-			KEY_SEMICOLON:  # ;  narrower crit window (calibration only)
-				if GameState.calibration:
-					GameState.set_perfect_fraction(GameState.perfect_fraction - 0.01)
-					_update_debug_label()
+			KEY_SEMICOLON:  # ;  narrower crit window
+				GameState.set_perfect_fraction(GameState.perfect_fraction - 0.01)
+				_update_debug_label()
 				return
-			KEY_APOSTROPHE:  # '  wider crit window (calibration only)
-				if GameState.calibration:
-					GameState.set_perfect_fraction(GameState.perfect_fraction + 0.01)
-					_update_debug_label()
+			KEY_APOSTROPHE:  # '  wider crit window
+				GameState.set_perfect_fraction(GameState.perfect_fraction + 0.01)
+				_update_debug_label()
 				return
 	if conductor.song_time < 0.0:
 		return  # count-in: listen to the beat, no casting yet
@@ -291,6 +304,25 @@ func _unhandled_input(event: InputEvent) -> void:
 		press_sfx.play()
 	_refresh_ui()
 
+## Map screen: arrows walk the highlighted options, SPACE commits.
+func _map_input(event: InputEvent) -> void:
+	if choice_options.is_empty():
+		return
+	if event.is_action_pressed("ui_right") or event.is_action_pressed("ui_down"):
+		map_cursor = (map_cursor + 1) % choice_options.size()
+		map_view.hover = choice_options[map_cursor]
+	elif event.is_action_pressed("ui_left") or event.is_action_pressed("ui_up"):
+		map_cursor = (map_cursor - 1 + choice_options.size()) % choice_options.size()
+		map_view.hover = choice_options[map_cursor]
+	elif event.is_action_pressed("ui_accept"):
+		get_viewport().set_input_as_handled()
+		var target: int = choice_options[map_cursor]
+		GameState.set_map_pos(target)
+		var row := (GameState.round_num - 1) % CYCLE_LEN
+		var node_type: String = GameState.map_rounds[row][target]["type"]
+		map_view.visible = false
+		_fade_to(func(): _enter_node(node_type))
+
 ## Instant feedback on every press: gold = Perfect, blue = close, grey = off.
 func _flash_press_feedback(t: float, sym: String) -> void:
 	var off := fposmod(t, half_beat)
@@ -304,6 +336,8 @@ func _flash_press_feedback(t: float, sym: String) -> void:
 		color = Color(0.5, 0.5, 0.55)
 	ring.flash(color)
 	ring.stamp(ARROWS.get(sym, "•"), color)
+
+## ── Casting ──────────────────────────────────────────────────────────────
 
 ## SPACE was pressed: try to turn the recorded sequence into a spell.
 func _resolve_cast() -> void:
@@ -414,6 +448,8 @@ func _buff_pct(kind: String) -> float:
 		return buffs[kind]["pct"]
 	return 0.0
 
+## ── Beat & enemy flow ────────────────────────────────────────────────────
+
 ## Runs once per beat — enemy bobs to the music, buffs tick, stale charges fade.
 func _on_beat(n: int) -> void:
 	if phase != "battle":
@@ -421,7 +457,7 @@ func _on_beat(n: int) -> void:
 	if not GameState.calibration:
 		enemy.bob()
 	if n < 0:
-		info_label.text = "Get ready…  %d" % -n  # count-in: 8, 7, 6…
+		info_label.text = "Get ready…  %d" % -n  # count-in: 16, 15, 14…
 		return
 	if n == 0:
 		_refresh_ui()  # count-in over, restore the normal hint
@@ -457,10 +493,6 @@ func _on_eighth(n: int) -> void:
 	if phase == "battle" and n >= 0 and not GameState.calibration:
 		enemy.on_eighth(n)
 
-## Same-beat resolution favors the PLAYER: an enemy hit doesn't land until
-## this beat's judgment window has closed, so a cast released "late but still
-## on the beat" resolves first — a kill cancels the hit, a Cure heals before
-## the damage, a Defense+ starts reducing it.
 func _on_enemy_attack(damage: int) -> void:
 	pending_attacks.append({
 		"amount": damage,
@@ -564,10 +596,78 @@ func _damage_player(damage: int, ignore_defense: bool, can_cost_heart: bool) -> 
 ## Each 7-round cycle gets a generated map the player can see in full and
 ## walk along its edges. Row 6 (rounds 7/14/21…) is always the boss.
 func _next_round_flow() -> void:
+	# The campaign ends after round 21 — except HARD MODE's true finale
+	if GameState.round_num > 21:
+		if GameState.ring != "none":
+			_game_clear(false)
+			return
+		match GameState.round_num:
+			22:
+				current_node = "well"
+				_enter_node("well")   # forced breather before the end
+			23:
+				_enter_ur_chest()     # every offer is a boss relic
+			24:
+				current_node = "boss"
+				_enter_node("boss")   # FINAL BOSS
+			_:
+				_game_clear(true)
+		return
 	var cycle := (GameState.round_num - 1) / CYCLE_LEN
 	if GameState.map_cycle != cycle:
 		GameState.generate_map(cycle)
-	_enter_choice()
+	if GameState.ring == "":
+		_enter_ring_node()  # ROUND 0: the ring chest on the map
+	else:
+		_enter_choice()
+
+## HARD MODE round 23: a vault where everything is Ultra Rare.
+func _enter_ur_chest() -> void:
+	current_node = "chest"
+	var taken: Array = GameState.items.duplicate()
+	menu_payload = []
+	var opts: Array = []
+	for i in 3:
+		var id := ItemDB.roll(["UR"], GameState.life_mode, GameState.ring, taken)
+		if id == "":
+			break
+		var it: Dictionary = ItemDB.ITEMS[id]
+		menu_payload.append(id)
+		opts.append({ "label": "[UR]  %s" % it["name"], "desc": it["desc"] })
+		taken.append(id)
+	if menu_payload.is_empty():
+		_log("The relic vault is empty — you own every relic")
+		_finish_node()
+		return
+	phase = "chest"
+	select_menu.open("RELIC  VAULT  —  pick one", opts)
+
+## The run is won. Hard mode's post-round-24 clear gets the bigger banner.
+func _game_clear(true_clear: bool) -> void:
+	phase = "over"
+	conductor.stop_beats()
+	bgm.stop()
+	victory_sfx.play()
+	var title := "TRUE  CLEAR  —  HARD  MODE  CONQUERED" if true_clear else "VICTORY  —  RUN  CLEAR"
+	select_menu.open(title, [
+		{ "label": "Return to Menu", "desc": "A new run awaits." },
+	])
+
+## ROUND 0: the map opens with a lone chest node — open it to pick your ring.
+func _enter_ring_node() -> void:
+	phase = "ring_map"
+	conductor.stop_beats()
+	bgm.stop()
+	enemy.visible = false
+	enemy_bar.visible = false
+	map_view.visible = true
+	map_view.current_row = 0
+	map_view.selectable = []
+	map_view.hover = -1
+	map_view.show_ring_node = true
+	map_view.hover_ring = true
+	round_label.text = "ROUND 0"
+	info_label.text = "SPACE  open the chest"
 
 func _enter_choice() -> void:
 	phase = "choice"
@@ -575,8 +675,10 @@ func _enter_choice() -> void:
 	bgm.stop()
 	enemy.visible = false
 	enemy_bar.visible = false
-	upgrade_label.visible = false
 	map_view.visible = true
+	# The ring chest stays on the first cycle's map, dimmed once opened
+	map_view.show_ring_node = GameState.round_num <= CYCLE_LEN
+	map_view.hover_ring = false
 	var row := (GameState.round_num - 1) % CYCLE_LEN
 	map_view.current_row = row
 	choice_options = []
@@ -586,13 +688,14 @@ func _enter_choice() -> void:
 	else:
 		choice_options = GameState.map_rounds[row - 1][GameState.map_pos]["edges"].duplicate()
 		choice_options.sort()
+	map_cursor = 0
+	map_view.hover = choice_options[0]
 	map_view.selectable = choice_options
 	round_label.text = "ROUND %d" % GameState.round_num
-	info_label.text = "Choose your path (1-%d)    F fight · E elite · W well · L learn · C chest · B boss" % choice_options.size()
+	info_label.text = "← →  choose your path      SPACE  go"
 
 func _enter_node(node_type: String) -> void:
 	current_node = node_type
-	upgrade_label.visible = false
 	match node_type:
 		"fight", "elite", "boss":
 			_start_battle(node_type)
@@ -631,23 +734,35 @@ func _start_battle(node_type: String) -> void:
 	enemy.visible = true
 	enemy_bar.visible = true
 	enemy_bar.max_value = enemy_hp
+	# Hard mode (No Ring): no rhythm diamond to lean on
+	ring.visible = GameState.ring != "none"
 	player_hp = player_max_hp
 	presses.clear()
 	buffs.clear()
 	pending_attacks.clear()
 	last_parry = -999.0  # song_time restarts each battle — stale values would jam the cooldown
+	var boss_tag := ""
+	if node_type == "boss":
+		boss_tag = "   ☠ FINAL BOSS" if GameState.round_num >= 24 else "   ☠ BOSS"
 	round_label.text = "ROUND %d   —   %s%s" % [
-		GameState.round_num, enemy.type["display"], "   ☠ BOSS" if node_type == "boss" else ""]
+		GameState.round_num, enemy.type["display"], boss_tag]
 	_refresh_ui()
 	conductor.start_beats()
 	_start_music()
 
-## The fight is over: stop the music, hand out loot, then upgrade menu(s).
+## The fight is over: the enemy explodes, victory fanfare, then rewards.
 func _win_battle() -> void:
-	pending_attacks.clear()  # a dead enemy's swing never lands
+	phase = "won"
+	pending_attacks.clear()
 	conductor.stop_beats()
 	bgm.stop()
 	_refresh_ui()
+	enemy.explode()
+	explosion_sfx.play()
+	get_tree().create_timer(0.9, false).timeout.connect(victory_sfx.play)
+	get_tree().create_timer(1.7, false).timeout.connect(_after_victory)
+
+func _after_victory() -> void:
 	pending_upgrades += 1  # every won battle levels a spell of your choice
 	match current_node:
 		"elite":
@@ -671,6 +786,12 @@ func _open_rewards() -> void:
 	else:
 		_finish_node()
 
+func _finish_node() -> void:
+	GameState.next_round()
+	_fade_to(_next_round_flow)
+
+## ── Items ────────────────────────────────────────────────────────────────
+
 ## Chest odds improve with the round: SR starts ~2% and reaches ~30% by
 ## round 15 (capped 40%); R creeps from 25% toward 45%; C takes the rest.
 func _roll_chest_item(owned: Array) -> String:
@@ -692,26 +813,23 @@ func _roll_chest_item(owned: Array) -> String:
 
 ## Open a chest: roll 3 distinct offers, player picks one.
 func _enter_chest() -> void:
-	chest_choices.clear()
 	var taken: Array = GameState.items.duplicate()
+	menu_payload = []
+	var opts: Array = []
 	for i in 3:
 		var id := _roll_chest_item(taken)
 		if id == "":
 			break
-		chest_choices.append(id)
+		var it: Dictionary = ItemDB.ITEMS[id]
+		menu_payload.append(id)
+		opts.append({ "label": "[%s]  %s" % [it["rarity"], it["name"]], "desc": it["desc"] })
 		taken.append(id)
-	if chest_choices.is_empty():
+	if menu_payload.is_empty():
 		_log("The chest is empty — you own everything it could hold")
 		_open_rewards()
 		return
 	phase = "chest"
-	upgrade_label.visible = true
-	info_label.text = ""
-	var lines := ["Treasure chest!  Pick one:", ""]
-	for i in chest_choices.size():
-		var it: Dictionary = ItemDB.ITEMS[chest_choices[i]]
-		lines.append("%d.  [%s] %s — %s" % [i + 1, it["rarity"], it["name"], it["desc"]])
-	upgrade_label.text = "\n".join(lines)
+	select_menu.open("TREASURE  —  pick one", opts)
 
 ## Add an item to the run: log it, apply instant effects, recalc stats.
 func _grant_item(id: String) -> void:
@@ -747,62 +865,53 @@ func _recalc_max_hp() -> void:
 	player_hp = mini(player_hp, player_max_hp)
 	player_bar.max_value = maxi(player_max_hp, 1)
 
-func _finish_node() -> void:
-	GameState.next_round()
-	_next_round_flow()
+## ── Menus (all SelectMenu-driven) ────────────────────────────────────────
 
-## A fresh run's first decision: which ring?
+## Round 0 — the run's first decision: which ring?
 func _enter_ring_select() -> void:
 	phase = "ring"
-	upgrade_label.visible = true
-	info_label.text = ""
-	round_label.text = ""
-	upgrade_label.text = (
-		"Choose your ring:\n\n"
-		+ "1.  FLIP RING\n     enables PARRY — press an arrow on the enemy's\n     attack beat (perfect parry stuns!)\n\n"
-		+ "2.  STRONG RING\n     attack +10 · damage taken -10 · healing +10\n\n"
-		+ "3.  NO RING"
-	)
+	round_label.text = "ROUND 0"
+	select_menu.open("ROUND 0  —  CHOOSE  YOUR  RING", [
+		{ "label": "Flip Ring",
+		  "desc": "Enables PARRY: press ↓ on the enemy's attack beat. A perfect parry negates the hit and stuns." },
+		{ "label": "Strong Ring",
+		  "desc": "Attack +10 · damage taken -10 · healing +10." },
+		{ "label": "No Ring   —   HARD MODE",
+		  "desc": "No ring bonuses, and the rhythm diamond is hidden. Music is your only guide." },
+	])
 
-## Fresh run: pick Life Hearts or Willpower before the music starts.
+## Fallback lifeline select (normally chosen in the main menu).
 func _enter_mode_select() -> void:
 	phase = "select"
-	upgrade_label.visible = true
-	info_label.text = ""
-	upgrade_label.text = (
-		"Choose your lifeline for this run:\n\n"
-		+ "1.  LIFE HEARTS\n     3 hearts — a hit at 0 HP burns one\n     and restores you to full HP\n\n"
-		+ "2.  WILLPOWER\n     a ticking clock — drains every beat,\n     hits at 0 HP burn it by the damage, HP stays 0.\n     When it cracks, you won't know how much is left…"
-	)
+	select_menu.open("CHOOSE  YOUR  LIFELINE", [
+		{ "label": "Life Hearts", "desc": "3 hearts — a hit at 0 HP burns one and restores full HP." },
+		{ "label": "Willpower", "desc": "A ticking clock. Hits at 0 HP burn it double. HP stays at 0." },
+	])
 
-## Victory reward 1: level up one known spell.
+## Victory reward: level up one known spell.
 func _enter_upgrade() -> void:
 	phase = "upgrade"
-	conductor.stop_beats()
-	bgm.stop()
-	upgrade_label.visible = true
-	info_label.text = ""
-	var all_maxed := true
-	var lines := ["VICTORY!  Choose a spell to level up:", ""]
-	for i in GameState.known_spells.size():
-		var spell_name: String = GameState.known_spells[i]
+	menu_payload = []
+	var opts: Array = []
+	for spell_name in GameState.known_spells:
 		var lv := GameState.get_spell_level(spell_name)
 		if lv >= 5:
-			lines.append("%d.  %s   Lv%d  (MAX)" % [i + 1, spell_name, lv])
-		else:
-			all_maxed = false
-			lines.append("%d.  %s   Lv%d → %d" % [i + 1, spell_name, lv, lv + 1])
-	if all_maxed:
+			continue  # maxed spells aren't offered
+		var sp := SpellBook.get_spell(spell_name)
+		menu_payload.append(spell_name)
+		opts.append({
+			"label": "%s   Lv%d → %d" % [spell_name, lv, lv + 1],
+			"desc": _pattern_text(sp["pattern"]),
+		})
+	if opts.is_empty():
 		pending_upgrades = 0  # nothing left to level — move on
 		_finish_node()
 		return
-	upgrade_label.text = "\n".join(lines)
+	select_menu.open("LEVEL  UP  A  SPELL", opts)
 
 ## The learn node: learn a new spell (3 random picks) or take the skip bonus.
 func _enter_learn() -> void:
 	phase = "learn"
-	upgrade_label.visible = true
-	info_label.text = ""
 	learn_choices.clear()
 	var unknown: Array = []
 	for spell in SpellBook.SPELLS:
@@ -811,96 +920,79 @@ func _enter_learn() -> void:
 	unknown.shuffle()
 	for i in mini(3, unknown.size()):
 		learn_choices.append(unknown[i])
-	var lines := ["Learn a new spell?", ""]
-	for i in learn_choices.size():
-		var sp := SpellBook.get_spell(learn_choices[i])
-		lines.append("%d.  %s   %s" % [i + 1, sp["name"], _pattern_text(sp["pattern"])])
-	var skip_reward := "+60 Willpower" if GameState.life_mode == "willpower" else "+1 Life Heart"
-	lines.append("%d.  Skip  →  %s" % [learn_choices.size() + 1, skip_reward])
-	if GameState.known_spells.size() >= GameState.MAX_SPELLS and not learn_choices.is_empty():
-		lines.append("")
-		lines.append("(spellbook full — learning replaces a spell, keeping its level)")
-	upgrade_label.text = "\n".join(lines)
+	menu_payload = []
+	var opts: Array = []
+	for spell_name in learn_choices:
+		var sp := SpellBook.get_spell(spell_name)
+		menu_payload.append(spell_name)
+		var full_note := ""
+		if GameState.known_spells.size() >= GameState.MAX_SPELLS:
+			full_note = "  (spellbook full — replaces a spell, keeping its level)"
+		opts.append({
+			"label": spell_name,
+			"desc": _pattern_text(sp["pattern"]) + full_note,
+		})
+	menu_payload.append("")  # skip
+	opts.append({
+		"label": "Skip",
+		"desc": "+60 Willpower" if GameState.life_mode == "willpower" else "+1 Life Heart",
+	})
+	select_menu.open("LEARN  A  NEW  SPELL?", opts)
 
 ## Spellbook full: pick which spell the newcomer replaces (it inherits the level).
 func _enter_replace() -> void:
 	phase = "replace"
-	var lines := ["Replace which spell with %s?" % pending_learn, "(the new spell inherits its level)", ""]
-	for i in GameState.known_spells.size():
-		var spell_name: String = GameState.known_spells[i]
-		lines.append("%d.  %s   Lv%d" % [i + 1, spell_name, GameState.get_spell_level(spell_name)])
-	upgrade_label.text = "\n".join(lines)
+	menu_payload = []
+	var opts: Array = []
+	for spell_name in GameState.known_spells:
+		menu_payload.append(spell_name)
+		opts.append({
+			"label": "%s   Lv%d" % [spell_name, GameState.get_spell_level(spell_name)],
+			"desc": "%s takes this slot and inherits Lv%d." % [pending_learn, GameState.get_spell_level(spell_name)],
+		})
+	select_menu.open("REPLACE  WHICH  SPELL  WITH  %s?" % pending_learn.to_upper(), opts)
 
-func _handle_menu_key(event: InputEvent) -> void:
-	if not (event is InputEventKey and event.pressed and not event.echo):
-		return
-	var idx: int = event.keycode - KEY_1
+## Every SelectMenu resolution routes through here, keyed by phase.
+func _on_menu_chosen(i: int) -> void:
 	match phase:
 		"select":
-			if idx == 0 or idx == 1:
-				GameState.set_life_mode("hearts" if idx == 0 else "willpower")
-				upgrade_label.visible = false
-				_refresh_ui()
-				_enter_ring_select()
+			GameState.set_life_mode("hearts" if i == 0 else "willpower")
+			_enter_ring_select()
 		"ring":
-			if idx >= 0 and idx <= 2:
-				GameState.set_ring(["flip", "strong", "none"][idx])
-				upgrade_label.visible = false
-				_refresh_ui()
-				_next_round_flow()
-		"choice":
-			if idx >= 0 and idx < choice_options.size():
-				var target: int = choice_options[idx]
-				GameState.set_map_pos(target)
-				map_view.visible = false
-				var row := (GameState.round_num - 1) % CYCLE_LEN
-				_enter_node(GameState.map_rounds[row][target]["type"])
+			GameState.set_ring(["flip", "strong", "none"][i])
+			_refresh_ui()
+			_next_round_flow()
 		"chest":
-			if idx >= 0 and idx < chest_choices.size():
-				_grant_item(chest_choices[idx])
-				upgrade_label.visible = false
-				_open_rewards()
+			_grant_item(menu_payload[i])
+			_open_rewards()
 		"upgrade":
-			if idx < 0 or idx >= GameState.known_spells.size():
-				return
-			var spell_name: String = GameState.known_spells[idx]
-			if GameState.get_spell_level(spell_name) >= 5:
-				return  # maxed — pick another
-			GameState.upgrade_spell(spell_name)
+			GameState.upgrade_spell(menu_payload[i])
 			pending_upgrades -= 1
 			_open_rewards()
 		"learn":
-			if idx == learn_choices.size():
+			if menu_payload[i] == "":
 				if GameState.life_mode == "willpower":
 					GameState.add_willpower(60)
 				else:
 					GameState.add_heart()
 				_finish_node()
-			elif idx >= 0 and idx < learn_choices.size():
-				pending_learn = learn_choices[idx]
+			else:
+				pending_learn = menu_payload[i]
 				if GameState.known_spells.size() >= GameState.MAX_SPELLS:
 					_enter_replace()
 				else:
 					GameState.learn_spell(pending_learn)
 					_finish_node()
 		"replace":
-			if idx < 0 or idx >= GameState.known_spells.size():
-				return
-			GameState.replace_spell(GameState.known_spells[idx], pending_learn)
+			GameState.replace_spell(menu_payload[i], pending_learn)
 			_finish_node()
+		"over":
+			GameState.reset_run()
+			var tw := create_tween()
+			tw.tween_property(fader, "color:a", 1.0, 0.35)
+			tw.tween_callback(func(): get_tree().change_scene_to_file("res://scenes/menu.tscn"))
 
-## "L_S" -> "← · SPC" for menu display.
-func _pattern_text(pattern: String) -> String:
-	var out := PackedStringArray()
-	for i in pattern.length():
-		var ch := pattern[i]
-		if ch == "_":
-			out.append("·")
-		elif ch == "S":
-			out.append("SPC")
-		else:
-			out.append(ARROWS.get(ch, "?"))
-	return " ".join(out)
+## ── Lifelines & endings ──────────────────────────────────────────────────
 
 ## Willpower hit zero? The Band-aid saves you exactly once.
 func _willpower_depleted() -> bool:
@@ -919,8 +1011,11 @@ func _game_over() -> void:
 	phase = "over"
 	conductor.stop_beats()
 	bgm.stop()
-	var why := "your willpower is spent." if GameState.life_mode == "willpower" else "out of Life Hearts."
-	info_label.text = "GAME OVER — %s  R = new run" % why
+	var why := "Your willpower is spent." if GameState.life_mode == "willpower" else "Out of Life Hearts."
+	select_menu.open("GAME  OVER  —  round %d.  %s" % [GameState.round_num, why], [
+		{ "label": "Return to Menu",
+		  "desc": "The run ends. Calibration settings are kept." },
+	])
 
 func _flash_screen_red() -> void:
 	_flash_rect_pulse(0.5, 0.7)
@@ -949,34 +1044,7 @@ func _hint_pulse(pitch: float) -> void:
 	# The screen breathes red exactly with each tick of Cure's rhythm
 	_flash_rect_pulse(0.32, half_beat * 0.8)
 
-## Debug: live BPM change — edits the CURRENT TRACK's bpm (saved per track).
-## Half-charged spells are cleared: their timings belong to the old tempo.
-func _set_bpm(new_bpm: float) -> void:
-	conductor.set_bpm(new_bpm)
-	if current_track.is_empty():
-		GameState.set_bpm(conductor.bpm)
-	else:
-		current_track["bpm"] = conductor.bpm
-		MusicLibrary.save_config()
-	half_beat = conductor.seconds_per_beat / 2.0
-	presses.clear()
-	recent_errors.clear()
-	_update_debug_label()
-
-## Press 0 after playing a while: your average error becomes the new offset.
-func _auto_calibrate() -> void:
-	if recent_errors.size() < 4:
-		_log("auto-calibrate: tap along a bit first")
-		return
-	var mean := 0.0
-	for e in recent_errors:
-		mean += e
-	mean /= recent_errors.size()
-	input_offset += mean
-	GameState.set_input_offset(input_offset)
-	recent_errors.clear()
-	_log("input offset -> %.0f ms" % (input_offset * 1000.0))
-	_update_debug_label()
+## ── Music & debug tuning ─────────────────────────────────────────────────
 
 ## Load the current track's stream and match the clock to its tempo.
 func _apply_track() -> void:
@@ -995,6 +1063,20 @@ func _start_music() -> void:
 	if bgm.stream:
 		bgm.play(float(current_track.get("offset", GameState.music_offset)))
 
+## Debug: live BPM change — edits the CURRENT TRACK's bpm (saved per track).
+## Half-charged spells are cleared: their timings belong to the old tempo.
+func _set_bpm(new_bpm: float) -> void:
+	conductor.set_bpm(new_bpm)
+	if current_track.is_empty():
+		GameState.set_bpm(conductor.bpm)
+	else:
+		current_track["bpm"] = conductor.bpm
+		MusicLibrary.save_config()
+	half_beat = conductor.seconds_per_beat / 2.0
+	presses.clear()
+	recent_errors.clear()
+	_update_debug_label()
+
 ## Live phase tuning: seek the playing track so you can align it BY EAR —
 ## press [ or ] until the music's beat sits on the click. Saved per track.
 func _adjust_music_offset(step: float) -> void:
@@ -1007,16 +1089,54 @@ func _adjust_music_offset(step: float) -> void:
 		bgm.seek(maxf(bgm.get_playback_position() + step, 0.0))
 	_update_debug_label()
 
+## Press 0 after playing a while: your average error becomes the new offset.
+func _auto_calibrate() -> void:
+	if recent_errors.size() < 4:
+		_log("auto-calibrate: tap along a bit first")
+		return
+	var mean := 0.0
+	for e in recent_errors:
+		mean += e
+	mean /= recent_errors.size()
+	input_offset += mean
+	GameState.set_input_offset(input_offset)
+	recent_errors.clear()
+	_log("input offset -> %.0f ms" % (input_offset * 1000.0))
+	_update_debug_label()
+
 func _update_debug_label() -> void:
+	if not (GameState.calibration or GameState.debug_mode):
+		return
 	var moffset: float = float(current_track.get("offset", GameState.music_offset))
-	debug_label.text = "%s\nBPM %.0f   [-/=]\noffset %.0f ms   [</> · 0 auto]\nmusic %.0f ms   [ [ / ] ]\nmetronome %s   [M]\nring %s [D] · ball %s [B]" % [
+	debug_label.text = "%s\nBPM %.0f   [-/=]\noffset %.0f ms   [</> · 0 auto]\nmusic %.0f ms   [ [ / ] ]\nmetronome %s   [M]\nring %s [D] · ball %s [B]\ntiming %s   [T]\ncrit ±%.0f ms   [ ; / ' ]" % [
 		current_track.get("name", "(no track)"),
 		conductor.bpm, input_offset * 1000.0, moffset * 1000.0,
 		"ON" if conductor.metronome else "off",
-		"ON" if ring.visible else "off", "ON" if ring.show_cursor else "off"]
-	if GameState.calibration:
-		debug_label.text += "\ntiming %s   [T]\ncrit ±%.0f ms   [ ; / ' ]" % [
-			"ON" if show_timing else "off", half_beat * GameState.perfect_fraction * 1000.0]
+		"ON" if ring.visible else "off", "ON" if ring.show_cursor else "off",
+		"ON" if show_timing else "off",
+		half_beat * GameState.perfect_fraction * 1000.0]
+
+## ── Shared UI helpers ────────────────────────────────────────────────────
+
+## Fade to black, run the callback, fade back in.
+func _fade_to(callback: Callable) -> void:
+	var tw := create_tween()
+	tw.tween_property(fader, "color:a", 1.0, 0.25)
+	tw.tween_callback(callback)
+	tw.tween_property(fader, "color:a", 0.0, 0.25)
+
+## "L_S" -> "← · SPC" for menu display.
+func _pattern_text(pattern: String) -> String:
+	var out := PackedStringArray()
+	for i in pattern.length():
+		var ch := pattern[i]
+		if ch == "_":
+			out.append("·")
+		elif ch == "S":
+			out.append("SPC")
+		else:
+			out.append(ARROWS.get(ch, "?"))
+	return " ".join(out)
 
 ## Floating combat number (damage on the enemy, heal/damage near the player bar).
 func _float_number(text: String, crit: bool, pos: Vector2, color: Color) -> void:
@@ -1032,7 +1152,7 @@ func _float_number(text: String, crit: bool, pos: Vector2, color: Color) -> void
 	tw.parallel().tween_property(lbl, "modulate:a", 0.0, 0.8)
 	tw.tween_callback(lbl.queue_free)
 
-## Bottom-left running log of casts and fizzles.
+## Left-side running log of casts and fizzles.
 func _log(text: String) -> void:
 	log_lines.append(text)
 	while log_lines.size() > LOG_LINES:

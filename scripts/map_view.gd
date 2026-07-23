@@ -1,7 +1,7 @@
 extends Node2D
 ## The cycle map: 7 columns (rounds) of nodes with connecting edges.
-## Completed rows dim out, the player's current node gets a white ring,
-## and selectable next nodes get numbered gold rings.
+## Navigation is cursor-based: the hovered node glows and shows a tooltip
+## explaining what it is — no legend to cross-reference.
 
 const COL_W := 92.0
 const ROW_SPREAD := 64.0
@@ -14,13 +14,20 @@ const TYPE_COLORS := {
 	"chest": Color(1.0, 0.85, 0.3),
 	"boss": Color(0.95, 0.3, 0.55),
 }
-const TYPE_LETTERS := {
-	"fight": "F", "elite": "E", "well": "W",
-	"learn": "L", "chest": "C", "boss": "B",
+const TYPE_TOOLTIPS := {
+	"fight": "Fight",
+	"elite": "Strong Enemy",
+	"well": "Willpower Well",
+	"learn": "Learn a Spell",
+	"chest": "Treasure Chest",
+	"boss": "BOSS",
 }
 
 var current_row := 0
 var selectable: Array = []  # node indices in current_row the player may pick
+var hover := -1             # the selectable node the cursor is on
+var show_ring_node := false # first cycle: draw ROUND 0 (the ring chest) at column -1
+var hover_ring := false     # cursor is on the ring chest
 
 func _process(_delta: float) -> void:
 	queue_redraw()
@@ -50,13 +57,70 @@ func _draw() -> void:
 			if i < current_row:
 				col.a = 0.25  # already behind you
 			draw_circle(p, NODE_R, col)
-			draw_string(font, p + Vector2(-5, 6), TYPE_LETTERS.get(t, "?"),
-				HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color(0.08, 0.08, 0.12, col.a))
+			_draw_icon(t, p, col.a)
 			# where you stand
 			if i == current_row - 1 and j == GameState.map_pos:
 				draw_arc(p, NODE_R + 4.0, 0.0, TAU, 32, Color.WHITE, 3.0)
-			# where you can go (numbered)
+			# reachable this round: gold ring; the hovered one pulses bigger
 			if i == current_row and selectable.has(j):
-				draw_arc(p, NODE_R + 4.0, 0.0, TAU, 32, Color(1.0, 0.85, 0.2), 3.0)
-				draw_string(font, p + Vector2(-4, -26), str(selectable.find(j) + 1),
-					HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(1.0, 0.85, 0.2))
+				if j == hover:
+					draw_arc(p, NODE_R + 6.0, 0.0, TAU, 32, Color(1.0, 0.85, 0.2), 4.0)
+				else:
+					draw_arc(p, NODE_R + 3.0, 0.0, TAU, 32, Color(1.0, 0.85, 0.2, 0.5), 2.0)
+	# ROUND 0: the ring chest at column -1, wired into every entry node
+	if show_ring_node:
+		var rp := _node_pos(-1, 0, 1)
+		var visited := GameState.ring != ""
+		var a := 0.25 if visited else 1.0
+		for k in rounds[0].size():
+			draw_line(rp, _node_pos(0, k, rounds[0].size()),
+				Color(1, 1, 1, 0.10 if visited else 0.28), 2.0)
+		var ccol: Color = TYPE_COLORS["chest"]
+		ccol.a = a
+		draw_circle(rp, NODE_R, ccol)
+		_draw_icon("chest", rp, a)
+		if not visited:
+			draw_arc(rp, NODE_R + 6.0, 0.0, TAU, 32, Color(1.0, 0.85, 0.2), 4.0)
+	# hovered node's name — fixed box at the bottom-right, above the version tag
+	if hover_ring:
+		_draw_tooltip(font, "Treasure Chest")
+	elif hover >= 0 and current_row < rounds.size():
+		var row: Array = rounds[current_row]
+		if hover < row.size():
+			_draw_tooltip(font, TYPE_TOOLTIPS.get(row[hover]["type"], ""))
+
+func _draw_tooltip(font: Font, tip: String) -> void:
+	var box_pos := Vector2(500, 266)  # screen ~ (870, 566), above the version tag
+	draw_rect(Rect2(box_pos, Vector2(240, 38)), Color(0.07, 0.07, 0.12, 0.92))
+	draw_rect(Rect2(box_pos, Vector2(240, 38)), Color(1.0, 0.85, 0.2, 0.6), false, 1.5)
+	draw_string(font, box_pos + Vector2(0, 26), tip,
+		HORIZONTAL_ALIGNMENT_CENTER, 240, 17, Color.WHITE)
+
+## Tiny vector icons — readable at a glance, no legend needed.
+func _draw_icon(t: String, p: Vector2, alpha: float) -> void:
+	var ink := Color(0.08, 0.08, 0.12, alpha)
+	match t:
+		"fight":  # single sword
+			draw_line(p + Vector2(-6, 7), p + Vector2(6, -7), ink, 2.5)
+			draw_line(p + Vector2(-1, -5), p + Vector2(-6, -1), ink, 2.5)
+			draw_circle(p + Vector2(-7, 8), 2.0, ink)
+		"elite":  # crossed swords
+			draw_line(p + Vector2(-7, 7), p + Vector2(7, -7), ink, 2.5)
+			draw_line(p + Vector2(-7, -7), p + Vector2(7, 7), ink, 2.5)
+		"well":  # water droplet
+			draw_circle(p + Vector2(0, 3), 5.5, ink)
+			draw_colored_polygon(PackedVector2Array([
+				p + Vector2(0, -9), p + Vector2(-5, 2), p + Vector2(5, 2)]), ink)
+		"learn":  # open book
+			draw_rect(Rect2(p + Vector2(-8, -5), Vector2(7, 11)), ink)
+			draw_rect(Rect2(p + Vector2(1, -5), Vector2(7, 11)), ink)
+			draw_line(p + Vector2(0, -7), p + Vector2(0, 7), ink, 1.5)
+		"chest":  # treasure box with a lid seam and lock
+			draw_rect(Rect2(p + Vector2(-8, -6), Vector2(16, 12)), ink)
+			draw_line(p + Vector2(-8, -1), p + Vector2(8, -1), Color(1, 1, 1, alpha * 0.7), 1.5)
+			draw_circle(p + Vector2(0, 2), 2.0, Color(1, 1, 1, alpha * 0.7))
+		"boss":  # skull
+			draw_circle(p + Vector2(0, -2), 7.0, ink)
+			draw_rect(Rect2(p + Vector2(-4, 3), Vector2(8, 5)), ink)
+			draw_circle(p + Vector2(-3, -3), 1.8, Color(1, 1, 1, alpha))
+			draw_circle(p + Vector2(3, -3), 1.8, Color(1, 1, 1, alpha))

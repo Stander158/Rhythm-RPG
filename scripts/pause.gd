@@ -1,16 +1,29 @@
 extends Node
-## ESC pauses/unpauses the whole battle (tree pause freezes music, timers,
-## tweens and input everywhere else). This node's process_mode is ALWAYS,
-## so it keeps listening while everything else is frozen.
-## While paused, M returns to the main menu.
+## ESC opens a full-screen pause menu (tree pause freezes everything else).
+## This node runs in PROCESS_MODE_ALWAYS, so it — and its child menu —
+## keep working while the game is frozen.
 
-@onready var label: Label = $"../UI/PauseLabel"
+@onready var menu: CanvasLayer = $PauseMenu
+
+func _ready() -> void:
+	menu.chosen.connect(_on_chosen)
 
 func _unhandled_input(event: InputEvent) -> void:
-	if event.is_action_pressed("ui_cancel"):  # ESC
-		var tree := get_tree()
-		tree.paused = not tree.paused
-		label.visible = tree.paused
-	elif get_tree().paused and event is InputEventKey and event.pressed and event.keycode == KEY_M:
-		get_tree().paused = false
+	if not event.is_action_pressed("ui_cancel"):  # ESC
+		return
+	get_viewport().set_input_as_handled()
+	var tree := get_tree()
+	if tree.paused:
+		tree.paused = false
+		menu.close()
+	else:
+		tree.paused = true
+		menu.open("PAUSED", [
+			{ "label": "Resume", "desc": "Back to the fight." },
+			{ "label": "Return to Menu", "desc": "Leave the battle. Run progress is kept." },
+		])
+
+func _on_chosen(i: int) -> void:
+	get_tree().paused = false
+	if i == 1:
 		get_tree().change_scene_to_file("res://scenes/menu.tscn")
