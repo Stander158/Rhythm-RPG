@@ -13,7 +13,7 @@ const ENEMY_TYPES := {
 	# Slime: the tutorial enemy — steady escalation with a breather bar
 	"slime": {
 		"display": "Cave Slime",
-		"hp": 1200, "normal": 25, "heavy": 50,
+		"hp": 600, "normal": 17, "heavy": 34,
 		"unlock_round": 1,
 		"radius": 70.0, "color": Color(0.35, 0.7, 0.45),
 		"phrase_slots": 32,
@@ -29,7 +29,7 @@ const ENEMY_TYPES := {
 	# Mad Clown: relentless — attacks often, hits light
 	"clown": {
 		"display": "Mad Clown",
-		"hp": 1000, "normal": 18, "heavy": 42,
+		"hp": 500, "normal": 12, "heavy": 29,
 		"unlock_round": 3,
 		"radius": 60.0, "color": Color(0.85, 0.4, 0.75),
 		"phrase_slots": 16,
@@ -49,7 +49,7 @@ const ENEMY_TYPES := {
 	# Hammer Man: slow and terrifying — rare hits, huge numbers
 	"hammer": {
 		"display": "Hammer Man",
-		"hp": 1400, "normal": 33, "heavy": 66,
+		"hp": 700, "normal": 22, "heavy": 45,
 		"unlock_round": 5,
 		"radius": 82.0, "color": Color(0.55, 0.55, 0.65),
 		"phrase_slots": 16,
