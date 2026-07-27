@@ -254,11 +254,11 @@ func _unhandled_input(event: InputEvent) -> void:
 					_start_music()
 				return
 			KEY_SEMICOLON:  # ;  narrower crit window
-				GameState.set_perfect_fraction(GameState.perfect_fraction - 0.01)
+				GameState.set_perfect_ms(GameState.perfect_ms - 1.0)
 				_update_debug_label()
 				return
 			KEY_APOSTROPHE:  # '  wider crit window
-				GameState.set_perfect_fraction(GameState.perfect_fraction + 0.01)
+				GameState.set_perfect_ms(GameState.perfect_ms + 1.0)
 				_update_debug_label()
 				return
 	if conductor.song_time < 0.0:
@@ -298,7 +298,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if show_timing:
 		# Signed press error: + = late, - = early
 		var ms := err * 1000.0
-		var tcolor := Color(1.0, 0.85, 0.2) if absf(err) <= half_beat * GameState.perfect_fraction else Color(0.6, 0.7, 0.85)
+		var tcolor := Color(1.0, 0.85, 0.2) if absf(err) <= GameState.perfect_window() else Color(0.6, 0.7, 0.85)
 		_float_number("%+.0f ms" % ms, false, ring.position + Vector2(105, -40), tcolor)
 	_flash_press_feedback(t, sym)
 	if sym == "S":
@@ -333,9 +333,9 @@ func _flash_press_feedback(t: float, sym: String) -> void:
 	var off := fposmod(t, half_beat)
 	off = minf(off, half_beat - off)
 	var color: Color
-	if off <= half_beat * GameState.perfect_fraction:
+	if off <= GameState.perfect_window():
 		color = Color(1.0, 0.85, 0.2)
-	elif off <= half_beat * SpellBook.CLOSE_FRACTION:
+	elif off <= SpellBook.CLOSE_MS / 1000.0:
 		color = Color(0.4, 0.65, 1.0)
 	else:
 		color = Color(0.5, 0.5, 0.55)
@@ -359,8 +359,8 @@ func _resolve_cast() -> void:
 		return
 	var spell: Dictionary = res["spell"]
 	# X-Matter widens the crit window
-	var pf := GameState.perfect_fraction * (1.5 if ItemDB.has(GameState.items, "x_matter") else 1.0)
-	var q: Dictionary = SpellBook.quality(res["offsets"], half_beat, pf)
+	var pw := GameState.perfect_window() * (1.5 if ItemDB.has(GameState.items, "x_matter") else 1.0)
+	var q: Dictionary = SpellBook.quality(res["offsets"], half_beat, pw)
 	var lv := GameState.get_spell_level(spell["name"])
 	var tier := "crit" if q["crit"] else ("normal" if q["avg"] >= NORMAL_TIER else "weak")
 	cast_sfx.stream = CAST_SFX[spell["name"]][tier]
@@ -524,7 +524,7 @@ func _process(_delta: float) -> void:
 			# Tiers: crit = negate + stun · normal = -50% · weak = -25%
 			if GameState.character == "virtuosa":
 				var diff := absf(last_parry - pa["grid"])
-				if diff <= half_beat * GameState.perfect_fraction:
+				if diff <= GameState.perfect_window():
 					dmg = 0
 					_parry_sound("crit")
 					_perfect_parry()
@@ -1165,7 +1165,7 @@ func _update_debug_label() -> void:
 		"ON" if conductor.metronome else "off",
 		"ON" if ring.visible else "off", "ON" if ring.show_cursor else "off",
 		"ON" if show_timing else "off",
-		half_beat * GameState.perfect_fraction * 1000.0]
+		GameState.perfect_ms]
 
 ## ── Shared UI helpers ────────────────────────────────────────────────────
 

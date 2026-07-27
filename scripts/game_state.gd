@@ -19,7 +19,7 @@ var bpm := 100.0
 var input_offset := 0.0
 var has_input_offset := false  # false -> seed from the audio driver's estimate
 var music_offset := 0.09       # seconds skipped at the start of the BGM (phase alignment; tuned for the current track)
-var perfect_fraction := 0.16   # crit window as a fraction of an eighth slot (tunable in calibration)
+var perfect_ms := 25.0   # crit window in MILLISECONDS, tempo-independent (tunable in calibration)
 var items: Array = []          # inventory (future)
 var known_spells: Array = RUN_START_SPELLS.duplicate()
 var spell_levels := {}         # missing entries mean Lv1
@@ -206,7 +206,7 @@ func save() -> void:
 		"input_offset": input_offset,
 		"has_input_offset": has_input_offset,
 		"music_offset": music_offset,
-		"perfect_fraction": perfect_fraction,
+		"perfect_ms": perfect_ms,
 		"items": items,
 		"known_spells": known_spells,
 		"spell_levels": spell_levels,
@@ -236,8 +236,12 @@ func set_music_offset(v: float) -> void:
 	music_offset = maxf(v, 0.0)
 	save()
 
-func set_perfect_fraction(v: float) -> void:
-	perfect_fraction = clampf(v, 0.05, 0.45)
+## The crit window in seconds — what every judgment site actually compares.
+func perfect_window() -> float:
+	return perfect_ms / 1000.0
+
+func set_perfect_ms(v: float) -> void:
+	perfect_ms = clampf(v, 8.0, 60.0)
 	save()
 
 func load_save() -> void:
@@ -250,7 +254,7 @@ func load_save() -> void:
 		input_offset = data.get("input_offset", input_offset)
 		has_input_offset = data.get("has_input_offset", false)
 		music_offset = data.get("music_offset", 0.0)
-		perfect_fraction = data.get("perfect_fraction", perfect_fraction)
+		perfect_ms = data.get("perfect_ms", perfect_ms)
 		items = data.get("items", [])
 		records = data.get("records", {})  # career records outlive save versions
 		# Run state only loads from saves of the current structure —

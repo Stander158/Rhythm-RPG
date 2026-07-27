@@ -12,13 +12,20 @@ extends RefCounted
 ## Rules: every press judged against the grid; damage scales with accuracy
 ## down to a 5% floor; ALL presses Perfect = crit (x2 damage).
 
-# Judgment windows are FRACTIONS of an eighth-note slot, so they scale with
-# BPM (fixed seconds would make fast tempos trivially easy: once the slot
-# shrinks below the window, everything is "Perfect").
-const PERFECT_FRACTION := 0.16  # of a slot; ~41 ms @ 118 BPM — crits must be earned
-const CLOSE_FRACTION := 0.37    # "blue" feedback tier; ~94 ms @ 118 BPM
+# ACCURACY windows are fixed milliseconds, not fractions of a slot. Human
+# timing precision doesn't improve just because a song is slow, and the tempo
+# here comes from whatever track the player dropped in — scaling these would
+# quietly make a 90 BPM song lenient and a 174 BPM song brutal, which is not a
+# difficulty the player chose. ±25 ms is roughly Taiko's 良 window.
+# (The window only approaches a whole slot past ~600 BPM, so the old worry
+# about fast tempos becoming free never actually bites.)
+const PERFECT_MS := 25.0
+const CLOSE_MS := 60.0          # "blue" feedback tier
 const NONPERFECT_CAP := 0.7     # miss the perfect window at all -> at most 70% power
 const FALLOFF_POWER := 2.0      # then quality decays quadratically — small errors cost a lot
+# This one STAYS proportional: it doesn't ask "how accurate were you", it asks
+# "which slot did you mean". That's inherently relative to how far apart the
+# slots are, so it has to scale with tempo.
 const HIT_FRACTION := 0.40      # a press farther than this from its slot is NOT a hit —
 								# every charge and the release must actually land on the grid
 const MAX_SLOTS := 16
@@ -124,9 +131,11 @@ static func resolve(presses: Array, half_beat: float, known: Array) -> Dictionar
 ## Outside it there's a CLIFF: value drops straight to NONPERFECT_CAP and
 ## then decays quadratically to 0 at the worst offset (half a slot) — being
 ## slightly off costs a lot. Average is floored at 5%. All Perfect = crit.
-static func quality(offsets: Array, half_beat: float, perfect_fraction: float = PERFECT_FRACTION) -> Dictionary:
-	var perfect := half_beat * perfect_fraction
+static func quality(offsets: Array, half_beat: float, perfect_window: float = PERFECT_MS / 1000.0) -> Dictionary:
 	var worst := half_beat / 2.0
+	# Guard the falloff's denominator for absurd tempos where the fixed window
+	# would swallow the whole slot
+	var perfect := minf(perfect_window, worst * 0.9)
 	var total := 0.0
 	var all_perfect := true
 	for off in offsets:
