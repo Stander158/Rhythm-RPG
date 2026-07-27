@@ -87,15 +87,15 @@ func set_life_mode(mode: String) -> void:
 const CHARACTERS := {
 	"virtuosa": {
 		"name": "Virtuosa",
-		"desc": "An agile Music Bender. Her Flip deflects attacks — press ↓ on the enemy's beat; a perfect parry stuns.",
+		"desc": "Cannot sit still. Hits ↓ on the enemy's beat to slap the attack away; time it perfectly and they need a lie down.",
 	},
 	"domina": {
 		"name": "Domina",
-		"desc": "A powerful Music Bender. Attack +10 · damage taken -10 · healing +10.",
+		"desc": "Solves problems with numbers. Attack +10 · damage taken -10 · healing +10. No tricks, just better at everything.",
 	},
 	"harmonia": {
 		"name": "Harmonia",
-		"desc": "A purist who hears the song itself. No bonuses and no rhythm diamond — but only she can reach the true ending.",
+		"desc": "Refuses all assistance, including the rhythm diamond. No bonuses, no training wheels, no sympathy. She says she can hear it fine.",
 	},
 }
 

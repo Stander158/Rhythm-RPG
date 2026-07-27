@@ -16,6 +16,8 @@ const CYCLE_LEN := 7         # rounds per cycle; the last round of each cycle is
 const BOSS_HP_MULT := 2.0
 const MUSIC_BPM := 118.0  # fallback tempo when no track is available
 const HEAL_FLOOR := 0.5   # heal spells never fall below 50% of listed value
+const TRAINING_HEAL_BEATS := 4  # the dummy refills this often — practice never stalls
+const TRAINING_COUNT_IN := 4    # short count-in: you came here to repeat a pattern
 
 # Every spell has three cast sounds: weak / normal / crit, picked by accuracy.
 const CAST_SFX := {
@@ -90,6 +92,15 @@ var pending_attacks: Array = []  # enemy hits waiting for the beat's window to c
 var flash_tween: Tween           # single owner of the red-flash animation
 var show_timing := false         # calibration debug: show each press's signed error in ms
 var metronome_auto := false      # the metronome is on as a failsafe, not by choice
+# Training is a no-stakes practice interlude that reuses the whole combat
+# machinery — same phase, same casting path — so patterns feel identical to
+# the real thing. Only death, attacks and the exit differ.
+var training := false
+var training_next := Callable()  # where the run continues once practice ends
+var dialogue_next := Callable()  # where a page-turned conversation leads
+var demo_pattern := ""   # a spell's rhythm, ticking under a training session
+var demo_period := 0     # eighth-slots per call-and-response cycle
+var during_lines := {}   # this fight's drawn set of mid-battle taunts
 var log_lines: PackedStringArray = []
 # Input latency calibration: presses are judged at (song_time - input_offset).
 var input_offset := 0.0
@@ -112,6 +123,7 @@ var recent_errors: Array[float] = []  # signed per-press error, for auto-calibra
 @onready var map_view: Node2D = $UI/MapView
 @onready var will_clock: Node2D = $UI/WillClock
 @onready var select_menu: CanvasLayer = $SelectMenu
+@onready var dialogue: Node2D = $UI/DialogueBox
 @onready var fader: ColorRect = $FaderLayer/Rect
 @onready var hint_sfx: AudioStreamPlayer = $HintSfx
 @onready var cast_sfx: AudioStreamPlayer = $CastSfx
@@ -124,6 +136,7 @@ var recent_errors: Array[float] = []  # signed per-press error, for auto-calibra
 
 func _ready() -> void:
 	select_menu.chosen.connect(_on_menu_chosen)
+	dialogue.finished.connect(_on_dialogue_finished)
 	explosion_sfx.stream = preload("res://audio/explosion.wav")
 	victory_sfx.stream = preload("res://audio/victory.wav")
 	# Debug readout & toggles exist ONLY in calibration mode
@@ -174,11 +187,24 @@ func _unhandled_input(event: InputEvent) -> void:
 	if phase == "choice":
 		_map_input(event)
 		return
+	if phase == "dialogue":
+		if event.is_action_pressed("ui_accept"):
+			get_viewport().set_input_as_handled()
+			dialogue.advance()
+		return
 	if phase == "prelude_map":
 		if event.is_action_pressed("ui_accept"):
 			get_viewport().set_input_as_handled()
 			map_view.hover_ring = false
-			_enter_character_select()
+			# Warm up on the dummy before the run's first real decision — the
+			# characters differ by how they handle the rhythm, so you should
+			# have felt it once before being asked to choose.
+			# The phase changes NOW, not when the fade lands: input is live
+			# for those 0.25s and a second SPACE would queue a second bout.
+			phase = "interlude"
+			_fade_to(func(): _enter_training(
+				"WARM  UP  —  the dummy has notes",
+				func(): _fade_to(_enter_character_select)))
 		return
 	if phase != "battle":
 		return  # menus (SelectMenu) and interludes own the input now
@@ -386,7 +412,7 @@ func _resolve_cast() -> void:
 				enemy_hp = maxi(enemy_hp - mc, 0)
 				enemy.hit()
 				_float_number("-%d" % mc, false, enemy.position + Vector2(-30, -130), Color(0.8, 0.6, 1.0))
-				if enemy_hp <= 0 and not GameState.calibration:
+				if enemy_hp <= 0 and not _target_is_a_dummy():
 					_win_battle()
 					return
 		"buff_atk", "buff_def":
@@ -447,12 +473,62 @@ func _resolve_cast() -> void:
 				_damage_player(spell["self_damage"], true, false)
 				_log("Needle recoil -%d" % spell["self_damage"])
 			if enemy_hp <= 0:
-				if GameState.calibration:
+				if _target_is_a_dummy():
 					enemy_hp = int(enemy_bar.max_value)  # target dummy respawns
 				else:
 					_win_battle()
 					return
 	_refresh_ui()
+
+## ── Enemy speech ─────────────────────────────────────────────────────────
+
+## Fire this fight's line for beat `n`, if it has one.
+func _speak_scheduled(n: int) -> void:
+	if not during_lines.has(n):
+		return
+	var line: Dictionary = (during_lines[n] as Dictionary).duplicate()
+	line["speaker"] = line.get("speaker", enemy.type["display"])
+	_speak([line])
+
+## Enemies carry several versions of everything they say; one set is drawn per
+## encounter, so meeting the same monster twice isn't the same scene twice.
+func _draw_during() -> void:
+	var variants: Array = enemy.type.get("dialogue", {}).get("during", [])
+	during_lines = variants.pick_random() if not variants.is_empty() else {}
+
+## A conversation ended. A page-turned one hands control to whatever queued
+## it; an ambient one just gives the hint strip back.
+func _on_dialogue_finished() -> void:
+	var next := dialogue_next
+	dialogue_next = Callable()
+	if next.is_valid():
+		next.call()
+	else:
+		_refresh_ui()
+
+## Ambient chatter over live play: it never takes input and never touches
+## a charge in progress — the player is mid-bar and owes it nothing.
+func _speak(lines: Array) -> void:
+	if lines.is_empty():
+		return
+	dialogue.play(lines, false)
+
+## One of the enemy's intro conversations, stamped with its speaker.
+func _intro_lines() -> Array:
+	var variants: Array = enemy.type.get("dialogue", {}).get("intro", [])
+	if variants.is_empty():
+		return []
+	var out: Array = []
+	for line in variants.pick_random():
+		var l: Dictionary = (line as Dictionary).duplicate()
+		l["speaker"] = l.get("speaker", enemy.type["display"])
+		out.append(l)
+	return out
+
+## Calibration and training both fight an immortal target: reaching 0 refills
+## it instead of ending the bout.
+func _target_is_a_dummy() -> bool:
+	return GameState.calibration or training
 
 func _buff_pct(kind: String) -> float:
 	if buffs.has(kind) and conductor.last_beat < buffs[kind]["until"]:
@@ -468,13 +544,22 @@ func _on_beat(n: int) -> void:
 	_sync_metronome()
 	if not GameState.calibration:
 		enemy.bob()
+	# Speech advances on beats, during the count-in as much as mid-fight
+	if dialogue.is_active():
+		dialogue.on_beat()
+	elif n >= 0:
+		_speak_scheduled(n)
 	if n < 0:
+		# A talking enemy owns the count-in; the countdown would just be noise
 		info_label.text = "Get ready…  %d" % -n  # count-in: 16, 15, 14…
 		return
 	if n == 0:
 		_refresh_ui()  # count-in over, restore the normal hint
+	if training and posmod(n, TRAINING_HEAL_BEATS) == 0:
+		_training_refill()
 	# Willpower mode: the clock is always ticking (Dimensional Ring stops it)
-	if GameState.life_mode == "willpower" and not GameState.calibration:
+	# — but never in practice, which has no stakes to spend.
+	if GameState.life_mode == "willpower" and not GameState.calibration and not training:
 		if not ItemDB.has(GameState.items, "dimensional_ring"):
 			GameState.willpower -= 1
 		if _willpower_depleted():
@@ -483,14 +568,24 @@ func _on_beat(n: int) -> void:
 			return
 		_refresh_ui()
 	# Buffs expire on their beat
+	var buff_expired := false
 	for kind in buffs.keys():
 		if n >= buffs[kind]["until"]:
 			_log(("Attack+" if kind == "atk" else "Defense+") + " fades")
 			buffs.erase(kind)
-			_refresh_ui()
+			buff_expired = true
+	# The buff readout counts down in beats, so it has to be redrawn on every
+	# one — and once more on the beat the last one expires, or the final
+	# number would stay burned on screen. It used to ride along with the
+	# willpower tick, which left it frozen in Life Hearts runs and in training.
+	if buff_expired or not buffs.is_empty():
+		_refresh_ui()
 	# On death's door: replay Cure's rhythm every 2 beats, starting on a beat
-	# so the demo is honest — press along with it and you're cured
-	if player_hp <= 0 and posmod(n, 2) == 0:
+	# so the demo is honest — press along with it and you're cured.
+	# The Dimensional Ring pins HP at 0 permanently, so for that build this
+	# isn't a warning, it's the normal state — the alarm would never stop.
+	if player_hp <= 0 and posmod(n, 2) == 0 \
+			and not ItemDB.has(GameState.items, "dimensional_ring"):
 		_play_cure_hint()
 	# The charge buffer only lives 4 beats from its FIRST press, then it
 	# auto-fizzles — so a charge can never grow into "spell too long"
@@ -504,6 +599,8 @@ func _on_beat(n: int) -> void:
 func _on_eighth(n: int) -> void:
 	if phase == "battle" and n >= 0 and not GameState.calibration:
 		enemy.on_eighth(n)
+	if training and demo_period > 0 and n >= 0:
+		_demo_eighth(n % demo_period)
 
 func _on_enemy_attack(damage: int) -> void:
 	pending_attacks.append({
@@ -562,7 +659,7 @@ func _perfect_parry() -> void:
 		enemy_hp = maxi(enemy_hp - 100, 0)
 		enemy.hit()
 		_float_number("-100", false, enemy.position + Vector2(-30, -130), Color(0.9, 0.9, 0.95))
-		if enemy_hp <= 0 and not GameState.calibration:
+		if enemy_hp <= 0 and not _target_is_a_dummy():
 			_win_battle()
 
 ## All player damage funnels through here: Defense+ reduction, death
@@ -637,9 +734,10 @@ func _next_round_flow() -> void:
 	else:
 		_enter_choice()
 
-## Harmonia's round 23: a vault where everything is Ultra Rare.
-func _enter_ur_chest() -> void:
-	current_node = "chest"
+## Three Ultra Rare relics, pick one. Shared by the boss reward and by
+## Harmonia's round-23 vault. Returns false when the player already owns every
+## relic, so callers can decide what to do with an empty vault.
+func _offer_ur_relics(title: String) -> bool:
 	var taken: Array = GameState.items.duplicate()
 	menu_payload = []
 	var opts: Array = []
@@ -652,17 +750,24 @@ func _enter_ur_chest() -> void:
 		opts.append({ "label": "[UR]  %s" % it["name"], "desc": it["desc"] })
 		taken.append(id)
 	if menu_payload.is_empty():
+		return false
+	phase = "chest"  # resolves through the "chest" branch, which owes rewards
+	select_menu.open(title, opts)
+	return true
+
+## Harmonia's round 23: a vault where everything is Ultra Rare.
+func _enter_ur_chest() -> void:
+	current_node = "chest"
+	if not _offer_ur_relics("RELIC  VAULT  —  pick one"):
 		_log("The relic vault is empty — you own every relic")
 		_finish_node()
-		return
-	phase = "chest"
-	select_menu.open("RELIC  VAULT  —  pick one", opts)
 
 ## The run is won. Hard mode's post-round-24 clear gets the bigger banner.
 func _game_clear(true_clear: bool) -> void:
 	phase = "over"
 	conductor.stop_beats()
 	bgm.stop()
+	dialogue.stop()
 	victory_sfx.play()
 	GameState.note_run_end(GameState.round_num - 1, true, true_clear)
 	var title := "TRUE  CLEAR  —  THE  SONG  IS  COMPLETE" if true_clear else "VICTORY  —  RUN  CLEAR"
@@ -675,6 +780,7 @@ func _enter_prelude_node() -> void:
 	phase = "prelude_map"
 	conductor.stop_beats()
 	bgm.stop()
+	dialogue.stop()
 	enemy.visible = false
 	enemy_bar.visible = false
 	ring.visible = false  # no rhythm diamond outside of combat
@@ -691,6 +797,7 @@ func _enter_choice() -> void:
 	phase = "choice"
 	conductor.stop_beats()
 	bgm.stop()
+	dialogue.stop()
 	enemy.visible = false
 	enemy_bar.visible = false
 	ring.visible = false  # no rhythm diamond outside of combat
@@ -743,6 +850,7 @@ func _start_battle(node_type: String) -> void:
 		_:
 			enemy_id = enemy.ENEMY_TYPES.keys().pick_random()  # boss: anyone, beefed up
 	enemy.setup(enemy_id)
+	_draw_during()
 	# Each battle draws a random track from the user's music library
 	current_track = MusicLibrary.random_track()
 	_apply_track()
@@ -766,8 +874,163 @@ func _start_battle(node_type: String) -> void:
 	round_label.text = "ROUND %d   —   %s%s" % [
 		GameState.round_num, enemy.type["display"], boss_tag]
 	_refresh_ui()
+	# Anything the enemy has to say happens BEFORE the fight exists: the clock
+	# is still stopped, so there is no music, no metronome and no pressure
+	# while the player reads. Combat begins when the talking does.
+	_say_then(_intro_lines(), _begin_combat)
+
+## Start the clock. Everything before this point was staging.
+func _begin_combat() -> void:
+	phase = "battle"
+	# Harmonia still hears the song unaided
+	ring.visible = GameState.character != "harmonia"
+	conductor.count_in_beats = 16
 	conductor.start_beats()
 	_start_music()
+
+## Run a page-turned conversation, then continue. With nothing to say, the
+## continuation happens immediately — callers don't special-case silence.
+func _say_then(lines: Array, next: Callable) -> void:
+	if lines.is_empty():
+		next.call()
+		return
+	phase = "dialogue"
+	dialogue_next = next
+	ring.visible = false  # no clock is running for the diamond to track
+	dialogue.play(lines, true)
+	info_label.text = ""
+
+## ── Training ─────────────────────────────────────────────────────────────
+## A practice bout against a dummy that can't hit back and can't be killed.
+## It runs as a normal "battle" phase rather than a phase of its own, so every
+## casting rule — the grid, the fizzle gate, crits, item effects — is byte for
+## byte what you'll meet in a real fight. Practising against a different code
+## path would teach the wrong timing.
+func _enter_training(headline: String, next: Callable, lines: Array = [],
+		demo := "") -> void:
+	phase = "battle"
+	training = true
+	training_next = next
+	enemy.setup("dummy")
+	enemy.damage_mult = 0.0
+	_draw_during()
+	_set_demo(demo)
+	current_track = MusicLibrary.random_track()
+	_apply_track()
+	enemy_hp = int(enemy.type["hp"])
+	enemy.visible = true
+	enemy_bar.visible = true
+	enemy_bar.max_value = enemy_hp
+	map_view.visible = false
+	ring.visible = true  # even Harmonia gets the diamond while learning
+	player_hp = player_max_hp
+	presses.clear()
+	buffs.clear()
+	pending_attacks.clear()
+	last_parry = -999.0
+	round_label.text = headline
+	_refresh_ui()
+	if lines.is_empty():
+		lines = _intro_lines()
+	# Coaching is read in silence too, then the beat starts
+	_say_then(lines, _begin_training_clock)
+
+func _begin_training_clock() -> void:
+	phase = "battle"
+	ring.visible = true  # even Harmonia gets the diamond while learning
+	conductor.count_in_beats = TRAINING_COUNT_IN
+	conductor.start_beats()
+	_start_music()
+
+func is_training() -> bool:
+	return training
+
+## A rhythm can't be taught in words — it has to be heard. During a new-spell
+## session the pattern ticks itself out on the grid, then leaves an equal
+## silence for you to answer into: call, then response. The gap is the lesson;
+## a pattern looping without one is just noise to play over.
+func _set_demo(pattern: String) -> void:
+	demo_pattern = pattern
+	if pattern.is_empty():
+		demo_period = 0
+		return
+	var bar := int(ceilf(pattern.length() / 8.0)) * 8  # whole bars of eighths
+	demo_period = bar * 2  # the second bar is yours
+
+## One slot of the loop. Charges tick low, the release rings higher — the two
+## are distinguishable with your eyes shut, which is the whole point.
+func _demo_eighth(slot: int) -> void:
+	if slot >= demo_pattern.length():
+		return  # the answering bar: silence, so you can hear yourself
+	var sym := demo_pattern[slot]
+	if sym == "_":
+		return
+	hint_sfx.pitch_scale = 2.4 if sym == "S" else 1.6
+	hint_sfx.play()
+	ring.stamp(ARROWS.get(sym, "◆"), Color(0.85, 0.8, 0.55, 0.9))
+
+## A spell you've never played is just a rhythm you haven't heard yet, so the
+## run pauses on the dummy the moment one is learned — including when it
+## replaces another, since the pattern is equally new either way.
+func _train_new_spell(spell_name: String) -> void:
+	phase = "interlude"  # nothing is interactive until the dummy is up
+	var sp := SpellBook.get_spell(spell_name)
+	# Several ways to say the same three things; one set per spell learned
+	var lines: Array = [
+		[
+			{ "speaker": "Training Dummy",
+			  "text": "%s. It goes %s. I'll tap it out for you — then shut up for a bar so you can try." % [
+				spell_name.to_upper(), _pattern_text(sp["pattern"])] },
+			{ "speaker": "Training Dummy",
+			  "text": "Nail every note and it crits. Miss one and it still works, just sadly. Miss by a lot and nothing happens at all, which is its own kind of feedback." },
+			{ "speaker": "Training Dummy",
+			  "text": "I heal every four beats. I have no other hobbies. ESC when you've got it." },
+		],
+		[
+			{ "speaker": "Training Dummy",
+			  "text": "New one: %s. The shape is %s. Listen first — I'll play it, then leave you a bar." % [
+				spell_name.to_upper(), _pattern_text(sp["pattern"])] },
+			{ "speaker": "Training Dummy",
+			  "text": "Don't rush the last note. Everyone rushes the last note." },
+			{ "speaker": "Training Dummy",
+			  "text": "Stay as long as you like. I'm a sack of straw with excellent time. ESC to move on." },
+		],
+	].pick_random()
+	_fade_to(func(): _enter_training(
+		"NEW  SPELL  —  %s" % spell_name.to_upper(), _finish_node, lines,
+		sp["pattern"]))
+
+## Leave practice and hand control back to whatever queued it.
+func end_training() -> void:
+	if not training:
+		return
+	training = false
+	_set_demo("")
+	conductor.stop_beats()
+	bgm.stop()
+	dialogue.stop()
+	conductor.count_in_beats = 16  # restore the real battle count-in
+	enemy.visible = false
+	enemy_bar.visible = false
+	presses.clear()
+	var next := training_next
+	training_next = Callable()
+	# Called straight, not through _fade_to: some destinations (_finish_node)
+	# run their own fade, and two tweens on `fader` would fight each other.
+	# Whoever queued the practice owns the transition out of it.
+	if next.is_valid():
+		next.call()
+
+## The dummy tops itself up on a fixed cadence so a half-learned pattern can
+## be repeated forever. Refilling on the beat (rather than on death) keeps the
+## bar meaningful: what you see is the damage of your last few casts.
+func _training_refill() -> void:
+	if enemy_hp >= int(enemy_bar.max_value):
+		return
+	enemy_hp = int(enemy_bar.max_value)
+	enemy.modulate = Color(1.3, 1.3, 1.3)
+	create_tween().tween_property(enemy, "modulate", Color.WHITE, 0.25)
+	_refresh_ui()
 
 ## The fight is over: the enemy explodes, victory fanfare, then rewards.
 func _win_battle() -> void:
@@ -775,6 +1038,7 @@ func _win_battle() -> void:
 	pending_attacks.clear()
 	conductor.stop_beats()
 	bgm.stop()
+	dialogue.stop()
 	_refresh_ui()
 	enemy.explode()
 	explosion_sfx.play()
@@ -788,14 +1052,17 @@ func _after_victory() -> void:
 			_enter_chest()  # elite loot: same 3-choose-1 as a chest
 			return          # rewards continue after the pick
 		"boss":
-			# Boss relic (UR) + a breather
-			_grant_item(ItemDB.roll(["UR"], GameState.life_mode, GameState.character, GameState.items))
+			# Breather first, then the relic — bosses offer a CHOICE of three,
+			# same as an elite. They used to just hand over a random one.
 			if GameState.life_mode == "willpower":
 				GameState.add_willpower(GameState.WILLPOWER_MAX / 4)
 				_log("Boss bonus: +25% willpower")
 			else:
 				GameState.add_heart()
 				_log("Boss bonus: +1 heart")
+			if _offer_ur_relics("BOSS  RELIC  —  pick one"):
+				return  # rewards continue once it's picked
+			_log("No relics left to claim")
 	_open_rewards()
 
 ## Work through owed upgrade menus, then move to the next round.
@@ -1008,10 +1275,10 @@ func _on_menu_chosen(i: int) -> void:
 					_enter_replace()
 				else:
 					GameState.learn_spell(pending_learn)
-					_finish_node()
+					_train_new_spell(pending_learn)
 		"replace":
 			GameState.replace_spell(menu_payload[i], pending_learn)
-			_finish_node()
+			_train_new_spell(pending_learn)
 		"over":
 			GameState.reset_run()
 			var tw := create_tween()
@@ -1037,6 +1304,7 @@ func _game_over() -> void:
 	phase = "over"
 	conductor.stop_beats()
 	bgm.stop()
+	dialogue.stop()
 	GameState.note_run_end(GameState.round_num)
 	var why := "Your willpower is spent." if GameState.life_mode == "willpower" else "Out of Life Hearts."
 	select_menu.open("GAME  OVER  —  round %d.  %s" % [GameState.round_num, why], [
@@ -1236,8 +1504,11 @@ func _refresh_ui() -> void:
 	buff_label.text = "\n".join(parts)  # stacked in the right margin
 	if phase != "battle":
 		return
-	if presses.is_empty():
-		info_label.text = "Charge with ← on the beat, release with SPACE"
+	if dialogue.is_active():
+		info_label.text = ""  # the dialogue box owns this strip while it speaks
+	elif presses.is_empty():
+		info_label.text = "whack the dummy · ESC  when you're done" if training \
+			else "Charge with ← on the beat, release with SPACE"
 	else:
 		var seq := ""
 		for p in presses:

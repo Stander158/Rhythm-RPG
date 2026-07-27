@@ -15,6 +15,29 @@ const ENEMY_TYPES := {
 		"display": "Cave Slime",
 		"hp": 600, "normal": 17, "heavy": 34,
 		"unlock_round": 1,
+		# Both are lists of VARIANTS — one is drawn per encounter. "intro" is
+		# read before the fight exists (no clock, one SPACE per line); "during"
+		# is keyed by battle beat and floats over live play in a bubble.
+		"dialogue": {
+			"intro": [
+				[
+					{ "text": "Oh good, a visitor. I've been down here alone with a metronome for eleven years." },
+					{ "text": "Fair warning: I've gotten REALLY good at counting to four." },
+				],
+				[
+					{ "text": "Before we start — yes, I'm a slime in a cave. Yes, it's a bit on the nose." },
+					{ "text": "I didn't pick the venue. Let's just do the thing." },
+				],
+				[
+					{ "text": "You're the fourteenth one this week. The other thirteen also thought they had rhythm." },
+				],
+			],
+			"during": [
+				{ 64: { "text": "You're rushing. Everyone rushes." } },
+				{ 48: { "text": "Nice. Do it again, but on purpose this time." } },
+				{ 32: { "text": "Not bad!" }, 96: { "text": "Okay, that one was bad." } },
+			],
+		},
 		"radius": 70.0, "color": Color(0.35, 0.7, 0.45),
 		"phrase_slots": 32,
 		"phrases": [
@@ -31,6 +54,26 @@ const ENEMY_TYPES := {
 		"display": "Mad Clown",
 		"hp": 500, "normal": 12, "heavy": 29,
 		"unlock_round": 3,
+		"dialogue": {
+			"intro": [
+				[
+					{ "text": "A CROWD! Finally! Do you know how long I've been doing this bit to an empty cave?" },
+					{ "text": "You're going to love it. Or you're going to be badly hurt. Both are showbiz." },
+				],
+				[
+					{ "text": "I do birthdays, funerals, and unprovoked violence. Today: option three." },
+				],
+				[
+					{ "text": "Quick question before we begin — are you ticklish, or should I go straight to the hitting?" },
+					{ "text": "Don't answer. I've already decided." },
+				],
+			],
+			"during": [
+				{ 32: { "text": "HA! Still going!" }, 80: { "text": "Tough crowd." } },
+				{ 48: { "text": "This is the fun part! For me!" } },
+				{ 64: { "text": "You're doing great. I'm lying, but you're doing great." } },
+			],
+		},
 		"radius": 60.0, "color": Color(0.85, 0.4, 0.75),
 		"phrase_slots": 16,
 		"phrases": [
@@ -51,6 +94,26 @@ const ENEMY_TYPES := {
 		"display": "Hammer Man",
 		"hp": 700, "normal": 22, "heavy": 45,
 		"unlock_round": 5,
+		"dialogue": {
+			"intro": [
+				[
+					{ "text": "..." },
+					{ "text": "(He lifts the hammer. It takes a while. It is a very large hammer.)" },
+				],
+				[
+					{ "text": "I only know one move." },
+					{ "text": "It is enough." },
+				],
+				[
+					{ "text": "Nothing personal. I just have this hammer and a lot of free time." },
+				],
+			],
+			"during": [
+				{ 64: { "text": "..." } },
+				{ 48: { "text": "Hm." }, 112: { "text": "Hm." } },
+				{ 80: { "text": "You are still standing. Noted." } },
+			],
+		},
 		"radius": 82.0, "color": Color(0.55, 0.55, 0.65),
 		"phrase_slots": 16,
 		"phrases": [
@@ -68,6 +131,41 @@ const ENEMY_TYPES := {
 			[],                                                        # ________
 			[[8, "C"], [9, "C"], [10, "C"], [12, "A"], [14, "A"]],     # ____(CCC in 2 beats)AA
 			[[8, "H"], [14, "HA"]],                                    # ____(Heavy 3 beats)A
+		],
+	},
+	# Training Dummy: never attacks (one empty phrase = no events at all) and
+	# never dies — the battle refills it on a fixed cadence. Its HP is small
+	# on purpose: a real cast should visibly gouge the bar, so you can read
+	# your own accuracy off the damage number instead of guessing.
+	"dummy": {
+		"display": "Training Dummy",
+		"hp": 200, "normal": 0, "heavy": 0,
+		"unlock_round": 0,
+		# The warm-up borrows these when the battle doesn't pass its own lines
+		"dialogue": {
+			"intro": [
+				[
+					{ "text": "Hi. I'm a dummy. Professionally. Hit me: ← on the beat to charge, SPACE to let it go." },
+					{ "text": "Every spell is just a rhythm. Flame is ← _ SPACE. Cure is ← ← SPACE. Same buttons, different spacing, completely different spell. Yes, this is the entire game." },
+					{ "text": "I can't die and I don't hit back, so take your time. ESC when you're bored of me." },
+				],
+				[
+					{ "text": "Straw. Stuffing. No opinions. Perfect sparring partner." },
+					{ "text": "← on the beat charges, SPACE releases. The GAP between presses is what picks the spell — that's the whole trick." },
+					{ "text": "Swing away. I heal every four beats and I have nowhere to be. ESC to leave." },
+				],
+			],
+			"during": [
+				{ 32: { "text": "That one was close." } },
+				{ 48: { "text": "Don't watch the diamond. Listen." } },
+				{ 40: { "text": "I felt that. Well — I didn't. But conceptually." } },
+				{},
+			],
+		},
+		"radius": 66.0, "color": Color(0.62, 0.58, 0.52),
+		"phrase_slots": 16,
+		"phrases": [
+			[],
 		],
 	},
 }

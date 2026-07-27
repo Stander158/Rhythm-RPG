@@ -12,6 +12,11 @@ func _unhandled_input(event: InputEvent) -> void:
 	if not event.is_action_pressed("ui_cancel"):  # ESC
 		return
 	get_viewport().set_input_as_handled()
+	# Practice has nothing to pause — ESC simply ends it and the run goes on.
+	var host := get_parent()
+	if host.has_method("is_training") and host.is_training():
+		host.end_training()
+		return
 	var tree := get_tree()
 	if tree.paused:
 		tree.paused = false

@@ -64,6 +64,19 @@ static func type_flat(items: Array, spell_type: String) -> int:
 			total += int(tf[1])
 	return total
 
+## Would this item do literally nothing if max HP were frozen at 0? Derived
+## rather than flagged per item, so a new cake needs no bookkeeping — and
+## anything carrying a second effect keeps showing up on its own merits.
+const OTHER_EFFECTS := ["atk_flat", "heal_flat", "def_flat", "type_flat", "instant"]
+
+static func _dead_without_max_hp(it: Dictionary) -> bool:
+	if not it.has("max_hp"):
+		return false
+	for field in OTHER_EFFECTS:
+		if it.has(field):
+			return false
+	return true
+
 ## Random item of the given rarities, honoring lifeline/character limits.
 ## Items are unique per run: anything in `owned` never drops again.
 static func roll(rarities: Array, life_mode: String, character: String, owned: Array) -> String:
@@ -77,6 +90,11 @@ static func roll(rarities: Array, life_mode: String, character: String, owned: A
 		if it.has("mode") and it["mode"] != life_mode:
 			continue
 		if it.get("needs_flip", false) and character != "virtuosa":
+			continue
+		# The Dimensional Ring pins max HP at 0 for the rest of the run, so a
+		# plain cake becomes a blank — stop offering those. Anything that also
+		# does something else (Protein Cake's +10 attack) still earns its slot.
+		if owned.has("dimensional_ring") and _dead_without_max_hp(it):
 			continue
 		pool.append(id)
 	return pool.pick_random() if not pool.is_empty() else ""
