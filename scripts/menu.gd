@@ -21,6 +21,7 @@ func _open(start := 0) -> void:
 		  "desc": "No enemy. All spells unlocked. Tune input offset and each track's BPM / delay." },
 		{ "label": "Music Folder",
 		  "desc": "%d track(s) in the library. Drop mp3 / ogg / wav here — battles shuffle them." % MusicLibrary.tracks.size() },
+		{ "label": "Quit", "desc": "Close the game." },
 	], start)
 
 func _on_chosen(i: int) -> void:
@@ -36,6 +37,8 @@ func _on_chosen(i: int) -> void:
 		3:
 			OS.shell_open(ProjectSettings.globalize_path(MusicLibrary.MUSIC_DIR))
 			_open(3)
+		4:
+			get_tree().quit()
 
 func _fade_to_battle() -> void:
 	var tw := create_tween()

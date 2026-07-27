@@ -26,8 +26,8 @@ const TYPE_TOOLTIPS := {
 var current_row := 0
 var selectable: Array = []  # node indices in current_row the player may pick
 var hover := -1             # the selectable node the cursor is on
-var show_ring_node := false # first cycle: draw ROUND 0 (the ring chest) at column -1
-var hover_ring := false     # cursor is on the ring chest
+var show_ring_node := false # first cycle: draw the PRELUDE node at column -1
+var hover_ring := false     # cursor is on the prelude node
 
 func _process(_delta: float) -> void:
 	queue_redraw()
@@ -67,10 +67,10 @@ func _draw() -> void:
 					draw_arc(p, NODE_R + 6.0, 0.0, TAU, 32, Color(1.0, 0.85, 0.2), 4.0)
 				else:
 					draw_arc(p, NODE_R + 3.0, 0.0, TAU, 32, Color(1.0, 0.85, 0.2, 0.5), 2.0)
-	# ROUND 0: the ring chest at column -1, wired into every entry node
+	# The PRELUDE node at column -1, wired into every entry node
 	if show_ring_node:
 		var rp := _node_pos(-1, 0, 1)
-		var visited := GameState.ring != ""
+		var visited: bool = GameState.character != ""
 		var a := 0.25 if visited else 1.0
 		for k in rounds[0].size():
 			draw_line(rp, _node_pos(0, k, rounds[0].size()),
@@ -83,7 +83,7 @@ func _draw() -> void:
 			draw_arc(rp, NODE_R + 6.0, 0.0, TAU, 32, Color(1.0, 0.85, 0.2), 4.0)
 	# hovered node's name — fixed box at the bottom-right, above the version tag
 	if hover_ring:
-		_draw_tooltip(font, "Treasure Chest")
+		_draw_tooltip(font, "Prelude")
 	elif hover >= 0 and current_row < rounds.size():
 		var row: Array = rounds[current_row]
 		if hover < row.size():

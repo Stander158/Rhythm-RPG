@@ -30,9 +30,10 @@ const SPELLS := [
 	  "damage": [30, 38, 45, 53, 60] },
 	{ "name": "Wave", "pattern": "L_L_L_S", "type": "water",
 	  "damage": [75, 93, 114, 141, 180] },
-	# Bolt is all-or-nothing (like the original): non-crit casts are halved
+	# Bolt is all-or-nothing (like the original): crit hits full power,
+	# anything less is capped at 30%
 	{ "name": "Bolt", "pattern": "L_LLL_S", "type": "electric",
-	  "damage": [120, 143, 165, 195, 240], "noncrit_mult": 0.5 },
+	  "damage": [120, 143, 165, 195, 240], "noncrit_cap": 0.3 },
 	{ "name": "Needle", "pattern": "L_LS", "type": "normal",
 	  "damage": [60, 75, 90, 105, 120], "self_damage": 15 },
 	# Buffs: value = % at full strength for this level; actual strength is

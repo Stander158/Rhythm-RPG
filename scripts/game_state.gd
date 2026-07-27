@@ -32,7 +32,8 @@ var round_num := 1  # endless mode round; enemy scales linearly per round
 #   ""          — not chosen yet (battle shows the selection screen)
 var life_mode := ""
 var willpower := WILLPOWER_MAX
-var ring := ""            # run-start relic: "flip" (parry) / "strong" / "none"; "" = unchosen
+var character := ""       # "virtuosa" (parry) / "domina" (stats) / "harmonia" (hard); "" = unchosen
+var records := {}         # character id -> { best_round, cleared, true_clear, best_score }
 var suit_crits := 0       # crits landed while holding the Power-Restricting Suit
 var band_aid_used := false
 # The cycle map: 7 rows of nodes (row 6 = boss). Player sees the whole cycle
@@ -83,18 +84,57 @@ func set_life_mode(mode: String) -> void:
 	life_mode = mode
 	save()
 
-func set_ring(r: String) -> void:
-	ring = r
+const CHARACTERS := {
+	"virtuosa": {
+		"name": "Virtuosa",
+		"desc": "An agile Music Bender. Her Flip deflects attacks — press ↓ on the enemy's beat; a perfect parry stuns.",
+	},
+	"domina": {
+		"name": "Domina",
+		"desc": "A powerful Music Bender. Attack +10 · damage taken -10 · healing +10.",
+	},
+	"harmonia": {
+		"name": "Harmonia",
+		"desc": "A purist who hears the song itself. No bonuses and no rhythm diamond — but only she can reach the true ending.",
+	},
+}
+
+func set_character(c: String) -> void:
+	character = c
+	save()
+
+func get_record(id: String) -> Dictionary:
+	return records.get(id, { "best_round": 0, "cleared": false, "true_clear": false, "best_score": 0 })
+
+## Called when a run ends (death or clear) — keeps the best result per character.
+func note_run_end(reached: int, cleared := false, true_clear := false) -> void:
+	if character == "":
+		return
+	var r := get_record(character)
+	r["best_round"] = maxi(int(r["best_round"]), reached)
+	r["cleared"] = bool(r["cleared"]) or cleared
+	r["true_clear"] = bool(r["true_clear"]) or true_clear
+	records[character] = r
 	save()
 
 ## Build one cycle's map: 6 rows of 1-4 random nodes + the boss row.
 ## Edges connect neighbouring rows; every node is guaranteed reachable.
 func generate_map(cycle: int) -> void:
 	map_rounds = []
+	# In the opening cycle a Willpower Well may only show up once a real
+	# fight has come before it — no free refill before the first monster.
+	var fight_seen: bool = cycle > 0
 	for i in 6:
 		var row := []
 		for j in randi_range(1, 4):
-			row.append({ "type": MAP_NODE_POOL.pick_random(), "edges": [] })
+			var t: String = MAP_NODE_POOL.pick_random()
+			if t == "well" and not fight_seen:
+				t = "fight"
+			row.append({ "type": t, "edges": [] })
+		for node in row:
+			if node["type"] == "fight" or node["type"] == "elite":
+				fight_seen = true  # wells unlock from the next row on
+				break
 		map_rounds.append(row)
 	map_rounds.append([{ "type": "boss", "edges": [] }])
 	for i in map_rounds.size() - 1:
@@ -144,7 +184,7 @@ func reset_run() -> void:
 	round_num = 1
 	life_mode = ""  # choose your lifeline again next run
 	willpower = WILLPOWER_MAX
-	ring = ""
+	character = ""
 	items = []
 	suit_crits = 0
 	band_aid_used = false
@@ -174,7 +214,8 @@ func save() -> void:
 		"round_num": round_num,
 		"life_mode": life_mode,
 		"willpower": willpower,
-		"ring": ring,
+		"character": character,
+		"records": records,
 		"suit_crits": suit_crits,
 		"band_aid_used": band_aid_used,
 		"map_rounds": map_rounds,
@@ -211,6 +252,7 @@ func load_save() -> void:
 		music_offset = data.get("music_offset", 0.0)
 		perfect_fraction = data.get("perfect_fraction", perfect_fraction)
 		items = data.get("items", [])
+		records = data.get("records", {})  # career records outlive save versions
 		# Run state only loads from saves of the current structure —
 		# older saves fall back to a fresh run
 		if int(data.get("save_version", 1)) >= SAVE_VERSION:
@@ -220,7 +262,7 @@ func load_save() -> void:
 			round_num = int(data.get("round_num", round_num))
 			life_mode = data.get("life_mode", "")
 			willpower = int(data.get("willpower", WILLPOWER_MAX))
-			ring = data.get("ring", "")
+			character = data.get("character", "")
 			suit_crits = int(data.get("suit_crits", 0))
 			band_aid_used = data.get("band_aid_used", false)
 			map_rounds = data.get("map_rounds", [])

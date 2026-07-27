@@ -5,7 +5,7 @@ extends RefCounted
 ##   max_hp / atk_flat / heal_flat / def_flat : additive numbers (stack)
 ##   type_flat: [spell_type, amount]
 ##   mode: item only drops in that lifeline mode
-##   needs_flip: only drops if the Flip Ring was chosen
+##   needs_flip: only drops for Virtuosa (the parry character)
 ##   instant: on-pickup effect ("heart"/"level_random"/"level_choice"/"level_choice2")
 ## Unique behaviors (power_glove, suit, …) are matched by id in battle.gd.
 ##
@@ -39,6 +39,7 @@ const ITEMS := {
 	"precious_tome": { "name": "Precious Tome", "rarity": "SR", "desc": "Level up a spell of your choice, twice", "instant": "level_choice2" },
 	"dimensional_ring": { "name": "Dimensional Ring", "rarity": "UR", "desc": "Max HP -> 0; willpower stops draining", "mode": "willpower" },
 	"spiky_nail": { "name": "Spiky Nail", "rarity": "R", "desc": "Perfect parry deals 100 damage", "needs_flip": true },
+	# (needs_flip items are Virtuosa-only)
 	"flashy_nail": { "name": "Flashy Nail", "rarity": "SR", "desc": "Stuns last 12 beats", "needs_flip": true },
 	"suit": { "name": "Power-Restricting Suit", "rarity": "SR", "desc": "Attack x0.2, +5% per crit (max 300%)" },
 	"thunderous_gem": { "name": "Thunderous Gem", "rarity": "UR", "desc": "Attack x0.5, crits x3" },
@@ -63,9 +64,9 @@ static func type_flat(items: Array, spell_type: String) -> int:
 			total += int(tf[1])
 	return total
 
-## Random item of the given rarities, honoring mode/ring restrictions.
+## Random item of the given rarities, honoring lifeline/character limits.
 ## Items are unique per run: anything in `owned` never drops again.
-static func roll(rarities: Array, life_mode: String, ring: String, owned: Array) -> String:
+static func roll(rarities: Array, life_mode: String, character: String, owned: Array) -> String:
 	var pool: Array = []
 	for id in ITEMS:
 		var it: Dictionary = ITEMS[id]
@@ -75,7 +76,7 @@ static func roll(rarities: Array, life_mode: String, ring: String, owned: Array)
 			continue
 		if it.has("mode") and it["mode"] != life_mode:
 			continue
-		if it.get("needs_flip", false) and ring != "flip":
+		if it.get("needs_flip", false) and character != "virtuosa":
 			continue
 		pool.append(id)
 	return pool.pick_random() if not pool.is_empty() else ""

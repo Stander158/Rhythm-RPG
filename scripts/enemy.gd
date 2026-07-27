@@ -81,16 +81,24 @@ var stun_until := -1      # global eighth when a parry stun wears off
 var armed := true         # false after a stun: attacks wait for a fresh charge,
 						  # so a chain whose first C fell inside the stun is skipped
 var charge_flash := 0.0   # red pulse from a C cue, fades fast
+var telegraphing := false  # true from the first "di" until the blow lands
+var telegraph_level := 0.0 # 0→1 ramp: the body slides into the charge color
+var eighth_dur := 0.3      # seconds per eighth, set by the battle each round
 var heavy_charge := 0.0   # 0..1, swells over the 3-beat heavy charge
 var heavy_charging := false
 var hit_flash := 0.0
 var base_y: float
+var base_x: float
 
 @onready var charge_sfx: AudioStreamPlayer = $ChargeSfx
 @onready var attack_sfx: AudioStreamPlayer = $AttackSfx
+@onready var tick_sfx: AudioStreamPlayer = $TickSfx
+@onready var heavy_sfx: AudioStreamPlayer = $HeavySfx
+@onready var stun_sfx: AudioStreamPlayer = $StunSfx
 
 func _ready() -> void:
 	base_y = position.y
+	base_x = position.x
 	setup("slime")
 
 ## Load an enemy type: stats + flattened attack-event table.
@@ -103,7 +111,12 @@ func setup(type_id: String) -> void:
 	heavy_charging = false
 	heavy_charge = 0.0
 	charge_flash = 0.0
+	telegraphing = false
+	telegraph_level = 0.0
 	hit_flash = 0.0
+	heavy_sfx.stop()
+	stun_sfx.stop()
+	position.x = base_x
 	modulate.a = 1.0
 	scale = Vector2.ONE
 	events.clear()
@@ -112,6 +125,29 @@ func setup(type_id: String) -> void:
 	for i in type["phrases"].size():
 		for ev in type["phrases"][i]:
 			events[i * slots + ev[0]] = ev[1]
+	# Telegraph: two ticks on the off-beats before each GROUP of charges —
+	# "__(-di)(-di)CACA". A whole burst (CACA, CCC-AA, -C-A CA) is one group:
+	# a charge only leads if nothing else in the phrase happened within the
+	# previous 2 beats.
+	for i in type["phrases"].size():
+		var busy: Array = []
+		for ev in type["phrases"][i]:
+			busy.append(int(ev[0]))
+		for ev in type["phrases"][i]:
+			if ev[1] != "C":
+				continue  # heavy charges announce themselves with their drone
+			var s: int = int(ev[0])
+			var leads := true
+			for b in busy:
+				if b < s and s - b <= 4:
+					leads = false
+					break
+			if not leads or s < 3:
+				continue
+			for ahead in [1, 3]:
+				var slot: int = i * slots + (s - ahead)
+				if not events.has(slot):
+					events[slot] = "d"
 	queue_redraw()
 
 ## Driven by the Conductor's eighth signal (via battle.gd). The cycle position
@@ -119,8 +155,13 @@ func setup(type_id: String) -> void:
 func on_eighth(n: int) -> void:
 	last_eighth = n
 	if is_stunned():
+		if posmod(n, 4) == 0:
+			stun_sfx.play()  # a woozy chirp every two beats
 		return
 	match events.get(n % cycle_slots, ""):
+		"d":
+			tick_sfx.play()   # "di" — an attack is two beats out
+			telegraphing = true  # starts the slow slide into the charge color
 		"C":
 			armed = true
 			_charge()
@@ -142,9 +183,13 @@ func is_stunned() -> bool:
 func stun(eighths: int) -> void:
 	stun_until = last_eighth + eighths
 	armed = false
+	heavy_sfx.stop()
+	stun_sfx.play()  # first chirp lands with the parry, then every two beats
 	heavy_charging = false
 	heavy_charge = 0.0
 	charge_flash = 0.0
+	telegraphing = false
+	position.x = base_x
 
 ## Small vertical bob on every beat — dancing to the music.
 func bob() -> void:
@@ -172,12 +217,14 @@ func _charge() -> void:
 func _heavy_charge_start() -> void:
 	heavy_charging = true
 	heavy_charge = 0.0
-	charge_sfx.pitch_scale = 0.5  # same sample, ominous octave down
-	charge_sfx.play()
+	telegraphing = true  # the colour holds through the whole wind-up
+	heavy_sfx.play()     # one long drone, cut short when the blow releases
 
 func _attack(base_damage: int) -> void:
+	heavy_sfx.stop()  # the drone ends the instant the blow is released
 	heavy_charging = false
 	heavy_charge = 0.0
+	telegraphing = false
 	attack_sfx.pitch_scale = 0.6 if base_damage >= int(type["heavy"]) else 1.0
 	attack_sfx.play()
 	# lunge toward the player
@@ -189,18 +236,38 @@ func _attack(base_damage: int) -> void:
 func _process(delta: float) -> void:
 	hit_flash = maxf(hit_flash - delta * 3.0, 0.0)
 	charge_flash = maxf(charge_flash - delta * 2.5, 0.0)
+	# The telegraph is a smooth colour ramp over its 3 eighths, not a blink
+	if telegraphing:
+		telegraph_level = minf(telegraph_level + delta / maxf(eighth_dur * 3.0, 0.05), 1.0)
+	else:
+		telegraph_level = maxf(telegraph_level - delta * 4.0, 0.0)
 	if heavy_charging:
 		heavy_charge = minf(heavy_charge + delta / 1.8, 1.0)  # 3 beats at 100 BPM
+		# trembling with effort — faster and wider as the charge fills
+		position.x = base_x + sin(Time.get_ticks_msec() / 1000.0 * 42.0) * (1.5 + 4.5 * heavy_charge)
+	elif absf(position.x - base_x) > 0.01:
+		position.x = base_x
 	queue_redraw()
 
 func _draw() -> void:
-	var danger := maxf(charge_flash, heavy_charge)
+	# The telegraph slides the body toward the charge colour; the charge
+	# itself (or a heavy wind-up) takes it the rest of the way.
+	var danger := maxf(maxf(charge_flash, heavy_charge), telegraph_level * 0.85)
 	var body: Color = type["color"]
 	body = body.lerp(Color(0.85, 0.25, 0.25), danger)
 	body = body.lerp(Color.WHITE, hit_flash)
 	if is_stunned():
 		body = body.lerp(Color(0.5, 0.5, 0.55), 0.6)  # dazed grey
 	var radius: float = type["radius"] + heavy_charge * 14.0  # swells while heavy-charging
+	# Heavy wind-up: a pulsing aura swelling behind the body
+	if heavy_charging:
+		var pulse := sin(Time.get_ticks_msec() / 1000.0 * 9.0)
+		draw_circle(Vector2.ZERO, radius + 10.0,
+			Color(1.0, 0.4, 0.2, 0.20 * heavy_charge))
+		for k in 3:
+			var rr := radius + 14.0 + k * 13.0 + pulse * 5.0 * heavy_charge
+			draw_arc(Vector2.ZERO, rr, 0.0, TAU, 48,
+				Color(1.0, 0.35, 0.2, 0.42 * heavy_charge * (1.0 - k * 0.28)), 3.0)
 	draw_circle(Vector2.ZERO, radius, body)
 	# Eyes — X-ed out while stunned
 	draw_circle(Vector2(-25, -15), 10.0, Color.WHITE)
