@@ -89,6 +89,7 @@ var buffs := {}          # "atk"/"def" -> { "pct": float, "until": beat number }
 var pending_attacks: Array = []  # enemy hits waiting for the beat's window to close
 var flash_tween: Tween           # single owner of the red-flash animation
 var show_timing := false         # calibration debug: show each press's signed error in ms
+var metronome_auto := false      # the metronome is on as a failsafe, not by choice
 var log_lines: PackedStringArray = []
 # Input latency calibration: presses are judged at (song_time - input_offset).
 var input_offset := 0.0
@@ -156,7 +157,7 @@ func _ready() -> void:
 		ring.show_cursor = true
 		show_timing = true
 		conductor.count_in_beats = 4  # short count-in — get practicing quickly
-		round_label.text = "CALIBRATION MODE   (ESC then M returns to menu · N next track)"
+		round_label.text = "CALIBRATION MODE   (ESC to leave · N next track)"
 		if not MusicLibrary.tracks.is_empty():
 			current_track = MusicLibrary.tracks[0]
 		_apply_track()
@@ -226,6 +227,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_M:
 				if not event.echo:
 					conductor.metronome = not conductor.metronome
+					metronome_auto = false  # from here on it's the player's call
 					_update_debug_label()
 				return
 			KEY_D:
@@ -463,6 +465,7 @@ func _buff_pct(kind: String) -> float:
 func _on_beat(n: int) -> void:
 	if phase != "battle":
 		return
+	_sync_metronome()
 	if not GameState.calibration:
 		enemy.bob()
 	if n < 0:
@@ -1073,6 +1076,23 @@ func _hint_pulse(pitch: float) -> void:
 
 ## ── Music & debug tuning ─────────────────────────────────────────────────
 
+## Failsafe: you can only play to a beat you can hear. Whenever the music
+## isn't actually running — no track in the library, a file that failed to
+## load, or a non-looping wav that ran out mid-fight — the metronome takes
+## over so there's still something to play to, and steps back down as soon as
+## music returns. A metronome the player switched on themselves (M) is left
+## alone: `metronome_auto` marks only the clicks this failsafe owns.
+func _sync_metronome() -> void:
+	if bgm.playing:
+		if metronome_auto:
+			metronome_auto = false
+			conductor.metronome = false
+			_update_debug_label()
+	elif not conductor.metronome:
+		metronome_auto = true
+		conductor.metronome = true
+		_update_debug_label()
+
 ## Load the current track's stream and match the clock to its tempo.
 func _apply_track() -> void:
 	if current_track.is_empty():
@@ -1090,6 +1110,9 @@ func _apply_track() -> void:
 func _start_music() -> void:
 	if bgm.stream:
 		bgm.play(float(current_track.get("offset", GameState.music_offset)))
+	# Decide before the count-in's first beat — the conductor picks whether to
+	# click at the top of the beat, so waiting for _on_beat would drop one.
+	_sync_metronome()
 
 ## Debug: live BPM change — edits the CURRENT TRACK's bpm (saved per track).
 ## Half-charged spells are cleared: their timings belong to the old tempo.
